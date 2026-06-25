@@ -26,9 +26,6 @@ class TechnicianSaleController extends Controller
     }
 
     /**
-     * استعراض قائمة الفواتير النهائية الجاهزة للتنفيذ والموجهة لفني الطباعة
-     */
-   /**
      * استعراض قائمة الفواتير النهائية التي تحتوي على مواد خام وجاهزة لتنفيذ الفني
      */
     public function index(Request $request): AnonymousResourceCollection
@@ -39,16 +36,14 @@ class TechnicianSaleController extends Controller
         }
 
         // جلب الفواتير النهائية التي تحتوي على أسطر بها مواد خام (Raw Materials) سواء كانت مترية أو عددية
-       //  الكود المحدث والمصلح برمجياً:
-//  استبدل كود جلب الفواتير (Query) داخل دالة index بهذا الكود الصريح:
-$sales = Sale::with(['store', 'customer', 'user', 'items.item', 'items.itemUnit.unit'])
-    ->whereNotNull('journal_entry_id')
-    ->where('invoice_type', 'sale')
-    ->whereHas('items.item', function ($query) {
-        $query->where('is_dimensional', true); // الفرز بناءً على طبيعة الصنف المترية فقط
-    })
-    ->latest('invoice_date')
-    ->paginate(15);
+        $sales = Sale::with(['store', 'customer', 'user', 'items.item', 'items.itemUnit.unit'])
+            ->whereNotNull('journal_entry_id')
+            ->where('invoice_type', 'sale')
+            ->whereHas('items.item', function ($query) {
+                $query->where('is_dimensional', true); // الفرز بناءً على طبيعة الصنف المترية فقط
+            })
+            ->latest('invoice_date')
+            ->paginate(15);
 
         return SaleResource::collection($sales);
     }
@@ -70,7 +65,7 @@ $sales = Sale::with(['store', 'customer', 'user', 'items.item', 'items.itemUnit.
     }
 
     /**
-     * معالجة التبديل الذري للخامات من واجهة الفني مع تأمين ثبات القيم المالية للعميل
+     * معالجة التبديل الذري للخامات من واجهة الفني مع تأمين ثبات القيم المالية للعميل وتحديث الحالة
      */
     public function swapRawMaterials(SwapRawMaterialRequest $request, Sale $sale): JsonResponse
     {
@@ -78,8 +73,12 @@ $sales = Sale::with(['store', 'customer', 'user', 'items.item', 'items.itemUnit.
         $this->authorize('swapRawMaterials', $sale);
 
         try {
-            // 2. تمرير المصفوفة النظيفة المعتمدة مباشرة إلى طبقة الـ Service
-            $updatedSale = $this->saleService->swapRawMaterials($sale, $request->validated()['items']);
+            // 2. تمرير المعاملات الثلاثة كاملة (الفاتورة، المصفوفة، والحالة التشغيلية الجديدة المعتمدة) لحل خطأ ArgumentCountError
+            $updatedSale = $this->saleService->swapRawMaterials(
+                $sale,
+                $request->validated()['items'],
+                $request->validated()['production_status']
+            );
 
             return response()->json([
                 'success' => true,

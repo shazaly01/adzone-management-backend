@@ -30,7 +30,7 @@ class SaleService
         $this->journalService = $journalService;
     }
 
- /**
+    /**
      * معالجة وحفظ فاتورة مبيعات أو مرتجع كاشير جديدة بالكامل
      */
     public function createSale(array $data, int $userId): Sale
@@ -101,7 +101,7 @@ class SaleService
         });
     }
 
-   /**
+    /**
      * معالجة تعديل وتحديث فاتورة مبيعات قائمة بشكل فوري وآمن
      */
     public function updateSale(Sale $sale, array $data): Sale
@@ -178,7 +178,6 @@ class SaleService
         });
     }
 
-
     /**
      * حذف أرشيفي لفاتورة المبيعات مع تصفية أثرها المخزني والمالي
      */
@@ -198,7 +197,7 @@ class SaleService
         });
     }
 
-  /**
+    /**
      * توليد القيد المحاسبي المزدوج المتوافق مع حسابات الشجرة التجميعية الثابتة هاردكور والـ Sub-ledgers
      */
     private function generateJournalEntry(Sale $sale): JournalEntry
@@ -410,12 +409,12 @@ class SaleService
         ]);
     }
 
-   /**
-     * التبديل الذري (Atomic Swap) للخامات بواسطة الفني مع الملاءمة الذكية للوحدات والمخزن
+    /**
+     * التبديل الذري (Atomic Swap) للخامات بواسطة الفني مع الملاءمة الذكية للوحدات والمخزن وتحديث الحالة التشغيلية للورشة
      */
-    public function swapRawMaterials(\App\Models\Sale $sale, array $itemsData): \App\Models\Sale
+    public function swapRawMaterials(\App\Models\Sale $sale, array $itemsData, string $productionStatus): \App\Models\Sale
     {
-        return DB::transaction(function () use ($sale, $itemsData) {
+        return DB::transaction(function () use ($sale, $itemsData, $productionStatus) {
 
             // 1. مسح وتصفير كافة الحركات المخزنية القديمة
             $this->stockService->clearDocumentMovements($sale->invoice_number);
@@ -484,7 +483,12 @@ class SaleService
 
             // 5. إعادة بناء القيد المحاسبي المزدوج بالتكلفة المحدثة
             $newEntry = $this->generateJournalEntry($sale);
-            $sale->update(['journal_entry_id' => $newEntry->id]);
+
+            // [تعديل بروتوكول التنفيذ]: حفظ معرف القيد المالي الجديد مع تحديث الحالة التشغيلية المعتمدة من الفني ذرياً
+            $sale->update([
+                'journal_entry_id'  => $newEntry->id,
+                'production_status' => $productionStatus
+            ]);
 
             return $sale->load('items.itemUnit.unit');
         });

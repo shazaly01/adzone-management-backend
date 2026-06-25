@@ -138,7 +138,7 @@ class SaleController extends Controller
     }
 
     /**
-     * تبديل خامات الفاتورة بواسطة الفني وإعادة توازن المستودعات والـ Resource الموحد
+     * تبديل خامات الفاتورة بواسطة الفني وإعادة توازن المستودعات والـ Resource الموحد مع حفظ الحالة التشغيلية
      */
     public function swapRawMaterials(
         SwapRawMaterialRequest $request,
@@ -147,8 +147,12 @@ class SaleController extends Controller
         // 1. التحقق من صلاحية الفني عبر الـ Policy
         $this->authorize('swapRawMaterials', $sale);
 
-        // 2. تمرير البيانات المعتمدة للخدمة لتنفيذ التبديل الذري عبر المتغير المحقن في الكلاس
-        $updatedSale = $this->saleService->swapRawMaterials($sale, $request->validated()['items']);
+        // 2. التعديل هنا: تمرير المعاملات الثلاثة كاملة (الفاتورة، مصفوفة الأصناف، والحالة التشغيلية الجديدة) لحماية استقرار الكود
+        $updatedSale = $this->saleService->swapRawMaterials(
+            $sale,
+            $request->validated()['items'],
+            $request->validated()['production_status']
+        );
 
         // 3. شحن الفاتورة بالعلاقات الجردية والتحليلية المعتمدة قبل الترحيل للواجهة الأمامية
         $updatedSale->load(['store', 'customer', 'user', 'items.item', 'items.itemUnit.unit', 'treasury', 'bank']);
@@ -156,7 +160,7 @@ class SaleController extends Controller
         // 4. إعادة الاستجابة الموحدة بنظام الحسابات المساعدة المتسق
         return response()->json([
             'success' => true,
-            'message' => 'تم تبديل خامات الفاتورة وتحديث الأرصدة التكليفية والمخزنية بنجاح.',
+            'message' => 'تم تبديل خامات الفاتورة وتحديث حالتها التشغيلية والأرصدة التكليفية والمخزنية بنجاح.',
             'data'    => new SaleResource($updatedSale)
         ]);
     }

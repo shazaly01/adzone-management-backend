@@ -12,6 +12,12 @@ class Sale extends Model
 {
     use HasFactory, SoftDeletes;
 
+    // ثوابت الحالات التشغيلية لورشة التنفيذ لتوحيد الكود في النظام
+    const STATUS_PENDING = 'pending';
+    const STATUS_PROCESSING = 'processing';
+    const STATUS_ON_HOLD = 'on_hold';
+    const STATUS_COMPLETED = 'completed';
+
     protected $fillable = [
         'invoice_type',
         'invoice_sequence',
@@ -33,6 +39,7 @@ class Sale extends Model
         'designer_meter_price', // [إضافة]: سعر المتر المتغير للفاتورة الحالية
         'design_commission',    // [إضافة]: إجمالي عمولة المصمم المحسوبة للفاتورة
         'notes',
+        'production_status',    // [إضافة]: الحالة التشغيلية الخاصة بفني الطباعة والورشة
     ];
 
     protected $casts = [
@@ -45,6 +52,7 @@ class Sale extends Model
         'designer_id'          => 'integer',
         'designer_meter_price' => 'float',
         'design_commission'    => 'float',
+        'production_status'    => 'string',
     ];
 
     protected static function boot()

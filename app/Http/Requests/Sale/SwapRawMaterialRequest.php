@@ -3,6 +3,8 @@
 namespace App\Http\Requests\Sale;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
+use App\Models\Sale;
 use App\Models\SaleItem;
 use App\Models\Item;
 
@@ -22,6 +24,18 @@ class SwapRawMaterialRequest extends FormRequest
     public function rules(): array
     {
         return [
+            // التحقق الصارم من الحالة التشغيلية الجديدة للورشة
+            'production_status' => [
+                'required',
+                'string',
+                Rule::in([
+                    Sale::STATUS_PENDING,
+                    Sale::STATUS_PROCESSING,
+                    Sale::STATUS_ON_HOLD,
+                    Sale::STATUS_COMPLETED
+                ])
+            ],
+            // حماية بنية عناصر المواد الخام المستبدلة بالورشة
             'items'                => ['required', 'array', 'min:1'],
             'items.*.sale_item_id' => ['required', 'exists:sale_items,id'],
             'items.*.item_id'      => [
@@ -61,6 +75,8 @@ class SwapRawMaterialRequest extends FormRequest
     public function messages(): array
     {
         return [
+            'production_status.required'    => 'الحالة التشغيلية للورشة مطلوبة لمتابعة الطلب.',
+            'production_status.in'          => 'الحالة التشغيلية الممررة غير معرفة بالنظام.',
             'items.required'                => 'مصفوفة العناصر والتفاصيل مطلوبة لتحديث خامات المستند.',
             'items.array'                   => 'بنية تفاصيل الأصناف الممررة غير صحيحة.',
             'items.*.sale_item_id.required' => 'معرف سطر تفاصيل الفاتورة مطلوب لكل عنصر.',
