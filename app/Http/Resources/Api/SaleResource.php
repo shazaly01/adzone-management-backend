@@ -55,6 +55,8 @@ class SaleResource extends JsonResource
             'bank_id'          => $this->bank_id,
             'bank_name'        => $this->bank->name ?? null, // اسم الحساب البنكي المستلم (للمحاسب داخلياً)
 
+            'sale_type'          => $this->sale_type,
+            'customer_name_text' => $this->customer_name_text,
             'customer_id'      => $this->customer_id,
             'customer_name'    => $this->customer->name ?? null, // اسم العميل المستخرج من شجرة الحسابات
             'user_id'          => $this->user_id,

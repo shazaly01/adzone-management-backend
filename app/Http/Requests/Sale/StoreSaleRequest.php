@@ -45,6 +45,14 @@ class StoreSaleRequest extends FormRequest
                 'exists:banks,id'
             ],
 
+            'sale_type'        => ['required', Rule::in(['indoor', 'outdoor'])],
+            'customer_name_text' => [
+                Rule::requiredIf($this->sale_type === 'outdoor'),
+                'nullable',
+                'string',
+                'max:255'
+            ],
+
             // معلومات العميل والتاريخ
             'customer_id'     => ['required', 'exists:customers,id'],
             'invoice_date'    => ['required', 'date'],
@@ -131,6 +139,8 @@ class StoreSaleRequest extends FormRequest
             'treasury_id'              => 'الخزنة المالية المستلمة',
             'bank_id'                  => 'الحساب البنكي المستلم',
             'customer_id'              => 'حساب العميل',
+            'sale_type'                => 'نوع حركة البيع (داخلي / خارجي)',
+            'customer_name_text'       => 'اسم العميل الخارجي (النصي)',
             'invoice_date'             => 'تاريخ الفاتورة',
             'payment_type'             => 'طريقة الدفع',
             'grand_total'              => 'الصافي النهائي للمبيعات',

@@ -40,6 +40,8 @@ class Sale extends Model
         'design_commission',    // [إضافة]: إجمالي عمولة المصمم المحسوبة للفاتورة
         'notes',
         'production_status',    // [إضافة]: الحالة التشغيلية الخاصة بفني الطباعة والورشة
+        'sale_type',            // [إضافة جديدة]: نوع المبيعات لوجستياً (indoor / outdoor)
+        'customer_name_text',   // [إضافة جديدة]: اسم العميل النصي الحر للطلبات الخارجية
     ];
 
     protected $casts = [
@@ -53,6 +55,7 @@ class Sale extends Model
         'designer_meter_price' => 'float',
         'design_commission'    => 'float',
         'production_status'    => 'string',
+        'sale_type'            => 'string',
     ];
 
     protected static function boot()
@@ -122,5 +125,30 @@ class Sale extends Model
     public function journalEntry(): BelongsTo
     {
         return $this->belongsTo(JournalEntry::class, 'journal_entry_id');
+    }
+
+
+    /**
+     * فلترة الفواتير ديناميكياً حسب النوع (indoor / outdoor)
+     */
+    public function scopeOfSaleType($query, string $type)
+    {
+        return $query->where('sale_type', $type);
+    }
+
+    /**
+     * جلب الفواتير الداخلية فقط
+     */
+    public function scopeIndoor($query)
+    {
+        return $query->where('sale_type', 'indoor');
+    }
+
+    /**
+     * جلب الفواتير الخارجية فقط
+     */
+    public function scopeOutdoor($query)
+    {
+        return $query->where('sale_type', 'outdoor');
     }
 }
