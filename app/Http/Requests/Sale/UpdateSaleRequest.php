@@ -60,6 +60,8 @@ class UpdateSaleRequest extends FormRequest
             'designer_id'          => ['nullable', Rule::exists('users', 'id')->where('type', 'designer')],
             'designer_meter_price' => ['nullable', 'numeric', 'min:0'],
             'design_commission'    => ['nullable', 'numeric', 'min:0'],
+            'sale_type'            => ['required', Rule::in(['indoor', 'outdoor'])],
+            'customer_name_text'   => ['nullable', 'string', 'max:255'],
 
             // --- قواعد مصفوفة السطور (Items) بناءً على معمارية الوحدات المحدثة ---
             'items'                  => ['required', 'array', 'min:1'],
@@ -140,6 +142,8 @@ class UpdateSaleRequest extends FormRequest
             'designer_id'              => 'المصمم المسؤول',
             'designer_meter_price'     => 'سعر المتر للمصمم',
             'design_commission'        => 'إجمالي عمولة التصميم',
+            'sale_type'                => 'نوع حركة البيع (داخلي / خارجي)',
+'customer_name_text'       => 'اسم العميل الخارجي (النصي)',
             'items.*.is_designed'      => 'خاضع للتصميم في السطر',
             'items.*.length'           => 'الطول للسطر',
             'items.*.width'            => 'العرض للسطر',
