@@ -58,21 +58,23 @@ class Sale extends Model
         'sale_type'            => 'string',
     ];
 
-    protected static function boot()
-    {
-        parent::boot();
+  protected static function boot()
+{
+    parent::boot();
 
-        static::creating(function ($sale) {
-            $lastSequence = self::where('invoice_type', $sale->invoice_type)
-                ->max('invoice_sequence');
+    static::creating(function ($sale) {
+        // التغيير الجوهري: استخدام withTrashed() لتشمل الفواتير المحذوفة ناعماً
+        $lastSequence = self::withTrashed()
+            ->where('invoice_type', $sale->invoice_type)
+            ->max('invoice_sequence');
 
-            $nextSequence = $lastSequence ? $lastSequence + 1 : 1;
-            $sale->invoice_sequence = $nextSequence;
+        $nextSequence = $lastSequence ? $lastSequence + 1 : 1;
+        $sale->invoice_sequence = $nextSequence;
 
-            $prefix = $sale->invoice_type === 'sale' ? 'INV-' : 'SR-';
-            $sale->invoice_number = $prefix . str_pad($nextSequence, 4, '0', STR_PAD_LEFT);
-        });
-    }
+        $prefix = $sale->invoice_type === 'sale' ? 'INV-' : 'SR-';
+        $sale->invoice_number = $prefix . str_pad($nextSequence, 4, '0', STR_PAD_LEFT);
+    });
+}
 
     public function parentInvoice(): BelongsTo
     {

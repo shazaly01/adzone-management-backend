@@ -44,22 +44,33 @@ class Purchase extends Model
     /**
      * بوت مدمج (Model Boot) لتوليد الرقم التلقائي النقي والمحمي عند الحفظ الفعلي
      */
-    protected static function boot()
-    {
-        parent::boot();
+   protected static function boot()
+{
+    parent::boot();
 
-        static::creating(function ($purchase) {
-            $lastSequence = self::where('invoice_type', $purchase->invoice_type)
-                ->max('invoice_sequence');
+    static::creating(function ($purchase) {
+        // 1. الحصول على أعلى قيمة مسلسلة من الفواتير غير المحذوفة فقط
+        $lastSequence = self::where('invoice_type', $purchase->invoice_type)
+            ->whereNull('deleted_at')
+            ->max('invoice_sequence');
 
-            $nextSequence = $lastSequence ? $lastSequence + 1 : 1;
-            $purchase->invoice_sequence = $nextSequence;
+        $nextSequence = $lastSequence ? $lastSequence + 1 : 1;
 
-            $prefix = $purchase->invoice_type === 'purchase' ? 'PUR-' : 'PR-';
-            $purchase->invoice_number = $prefix . str_pad($nextSequence, 4, '0', STR_PAD_LEFT);
-        });
-    }
+        // 2. التحقق الدفاعي: التأكد من أن الرقم المسلسل التالي غير مستخدم حتى في الفواتير المحذوفة ناعماً
+        while (self::withTrashed()
+            ->where('invoice_type', $purchase->invoice_type)
+            ->where('invoice_sequence', $nextSequence)
+            ->exists()
+        ) {
+            $nextSequence++;
+        }
 
+        // 3. تعيين القيم الجديدة
+        $purchase->invoice_sequence = $nextSequence;
+        $prefix = $purchase->invoice_type === 'purchase' ? 'PUR-' : 'PR-';
+        $purchase->invoice_number = $prefix . str_pad($nextSequence, 4, '0', STR_PAD_LEFT);
+    });
+}
     /**
      * ارتباط المرتجع بالفاتورة الأصلية (في حال كان المستند من نوع return)
      */
