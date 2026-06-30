@@ -179,12 +179,12 @@ class ItemService
     // --- محركات القراءة والبحث والمخزون اللحظي (Stock & Search Engines) ---
     // =========================================================================
 
-  /**
+/**
      * جلب قائمة الأصناف المفلترة مع دمج الكمية اللحظية للمخزن المختار إن وجد
      */
     public function searchWithStock(array $filters, ?int $storeId)
     {
-        return Item::with(['units.unit', 'units.barcodes', 'units.prices.priceList', 'baseUnit', 'category'])
+        $query = Item::with(['units.unit', 'units.barcodes', 'units.prices.priceList', 'baseUnit', 'category'])
             ->when($storeId, function ($query) use ($storeId) {
                 $query->withSum(['stocks as current_stock' => function ($q) use ($storeId) {
                     $q->where('store_id', $storeId);
@@ -208,8 +208,9 @@ class ItemService
                 $query->where('is_active', $filters['is_active']);
             })
             ->latest();
-            return isset($filters['search']) ? $query->get() : $query->paginate(15);
 
+        // التبديل الديناميكي لحل مشكلة الصفحة الأولى عند البحث
+        return isset($filters['search']) ? $query->get() : $query->paginate(15);
     }
 
     /**
