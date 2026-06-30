@@ -207,8 +207,8 @@ class ItemService
             ->when(isset($filters['is_active']), function ($query) use ($filters) {
                 $query->where('is_active', $filters['is_active']);
             })
-            ->latest()
-            ->paginate(15);
+            ->latest();
+
     }
 
     /**
