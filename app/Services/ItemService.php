@@ -208,6 +208,7 @@ class ItemService
                 $query->where('is_active', $filters['is_active']);
             })
             ->latest();
+            return isset($filters['search']) ? $query->get() : $query->paginate(15);
 
     }
 
