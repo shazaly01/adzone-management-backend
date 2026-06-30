@@ -210,7 +210,7 @@ class ItemService
             ->latest();
 
         // التبديل الديناميكي لحل مشكلة الصفحة الأولى عند البحث
-        return isset($filters['search']) ? $query->get() : $query->paginate(15);
+       return (isset($filters['all']) || request()->has('all')) ? $query->get() : $query->paginate(15);
     }
 
     /**

@@ -42,7 +42,7 @@ class ItemController extends Controller
             'store_id.required' => 'عفواً، يجب تحديد المخزن أولاً قبل البدء بالبحث عن الأصناف.'
         ]);
 
-        $filters = $request->only(['search', 'item_type', 'category_id', 'is_active']);
+      $filters = $request->only(['search', 'item_type', 'category_id', 'is_active', 'all']);
 
         // استدعاء محرك البحث المطور من طبقة الخدمة وحقن المخزون اللحظي مباشرة
         $items = $this->itemService->searchWithStock($filters, (int) $request->store_id);
