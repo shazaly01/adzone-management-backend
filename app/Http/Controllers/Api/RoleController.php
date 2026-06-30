@@ -49,14 +49,21 @@ class RoleController extends Controller
         return new RoleResource($role->load('permissions'));
     }
 
-    public function update(UpdateRoleRequest $request, Role $role)
+ public function update(UpdateRoleRequest $request, Role $role)
     {
         $validated = $request->validated();
 
         DB::beginTransaction();
         try {
+            // 1. تحديث اسم الدور دائماً بناءً على البيانات المفحوصة
             $role->update(['name' => $validated['name']]);
-            $role->syncPermissions($validated['permissions']);
+
+            // 2. التحقق الصارم: يتم تحديث الصلاحيات فقط إذا كانت متواجدة في الطلب المرسل
+            // هذا يمنع الخطأ ويمنع مسح الصلاحيات القديمة عند تعديل الاسم بمفرده
+            if (array_key_exists('permissions', $validated)) {
+                $role->syncPermissions($validated['permissions'] ?? []);
+            }
+
             DB::commit();
 
             return new RoleResource($role->load('permissions'));
