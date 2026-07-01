@@ -4,6 +4,8 @@ namespace App\Http\Requests\Voucher;
 
 use Illuminate\Validation\Rule;
 use Illuminate\Foundation\Http\FormRequest;
+use App\Models\Account;
+use App\Models\User;
 
 class UpdateVoucherRequest extends FormRequest
 {
@@ -16,6 +18,39 @@ class UpdateVoucherRequest extends FormRequest
     }
 
     /**
+     * [حقن معماري ذكي]: اعتراض البيانات قبل الفحص لحل مشكلة الحسابات المساعدة تلقائياً عند التعديل
+     */
+    protected function prepareForValidation()
+    {
+        // إذا كان نوع الحساب المساعد مصمم، نقوم بدمج معرف حسابه التجميعي (2103) آلياً
+        if (in_array($this->input('sub_ledger_type'), ['designer', 'user', User::class])) {
+            $account = Account::where('code', Account::CODE_DESIGNERS_LEDGER)->first();
+
+            $this->merge([
+                'account_id' => $account ? $account->id : $this->input('account_id'),
+            ]);
+        }
+
+        // إذا كان نوع الحساب المساعد بنك، نقوم بدمج معرف حسابه التجميعي الرئيسي (1102) آلياً
+        if ($this->input('sub_ledger_type') === 'bank') {
+            $account = Account::where('code', Account::CODE_BANKS)->first();
+
+            $this->merge([
+                'account_id' => $account ? $account->id : $this->input('account_id'),
+            ]);
+        }
+
+        // إذا كان نوع الحساب المساعد خزينة، نقوم بدمج معرف حسابه التجميعي الرئيسي (1101) آلياً
+        if ($this->input('sub_ledger_type') === 'treasury') {
+            $account = Account::where('code', Account::CODE_TREASURY)->first();
+
+            $this->merge([
+                'account_id' => $account ? $account->id : $this->input('account_id'),
+            ]);
+        }
+    }
+
+    /**
      * قواعد التحقق عند تعديل السند (الحفاظ على نفس صرامة القيود المالية المشروطة)
      */
     public function rules(): array
@@ -24,7 +59,8 @@ class UpdateVoucherRequest extends FormRequest
             'voucher_type'    => ['required', Rule::in(['payment', 'receipt'])],
             'account_id'      => ['required', 'exists:accounts,id'],
 
-            'sub_ledger_type' => ['required', 'string', Rule::in(['supplier', 'customer', 'expense'])],
+            // [تعديل جوهري]: مزامنة الكيانات المسموحة لتشمل 'bank', 'treasury', 'designer' أثناء التحديث
+            'sub_ledger_type' => ['required', 'string', Rule::in(['supplier', 'customer', 'expense', 'designer', 'bank', 'treasury', User::class])],
             'sub_ledger_id'   => ['required', 'integer'],
 
             'payment_method'  => ['required', Rule::in(['cash', 'bank'])],

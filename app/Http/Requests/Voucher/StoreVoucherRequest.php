@@ -18,13 +18,31 @@ class StoreVoucherRequest extends FormRequest
     }
 
     /**
-     * [حقن معماري ذكي]: اعتراض البيانات قبل الفحص لحل مشكلة الحساب المساعد للمصممين تلقائياً
+     * [حقن معماري ذكي]: اعتراض البيانات قبل الفحص لحل مشكلة الحسابات المساعدة تلقائياً
      */
     protected function prepareForValidation()
     {
-        // إذا كان نوع الحساب المساعد مصمم، نقوم بدمج معرف حسابه التجميعي (2103) آلياً دون تدخّل الواجهة
+        // إذا كان نوع الحساب المساعد مصمم، نقوم بدمج معرف حسابه التجميعي (2103) آلياً
         if (in_array($this->input('sub_ledger_type'), ['designer', 'user', User::class])) {
             $account = Account::where('code', Account::CODE_DESIGNERS_LEDGER)->first();
+
+            $this->merge([
+                'account_id' => $account ? $account->id : $this->input('account_id'),
+            ]);
+        }
+
+        // إذا كان نوع الحساب المساعد بنك، نقوم بدمج معرف حسابه التجميعي الرئيسي (1102) آلياً
+        if ($this->input('sub_ledger_type') === 'bank') {
+            $account = Account::where('code', Account::CODE_BANKS)->first();
+
+            $this->merge([
+                'account_id' => $account ? $account->id : $this->input('account_id'),
+            ]);
+        }
+
+        // إذا كان نوع الحساب المساعد خزينة، نقوم بدمج معرف حسابه التجميعي الرئيسي (1101) آلياً
+        if ($this->input('sub_ledger_type') === 'treasury') {
+            $account = Account::where('code', Account::CODE_TREASURY)->first();
 
             $this->merge([
                 'account_id' => $account ? $account->id : $this->input('account_id'),
@@ -41,12 +59,12 @@ class StoreVoucherRequest extends FormRequest
             'voucher_type'    => ['required', Rule::in(['payment', 'receipt'])],
             'account_id'      => ['required', 'exists:accounts,id'],
 
-            // [تعديل جوهري]: السماح بقبول الكيان 'designer' و 'App\Models\User' ضمن الكيانات المعتمدة
-            'sub_ledger_type' => ['required', 'string', Rule::in(['supplier', 'customer', 'expense', 'designer', User::class])],
+            // [تعديل جوهري]: السماح بقبول الكيانات 'bank' و 'treasury' كحسابات مساعدة معتمدة ومطابقة للبقية
+            'sub_ledger_type' => ['required', 'string', Rule::in(['supplier', 'customer', 'expense', 'designer', 'bank', 'treasury', User::class])],
             'sub_ledger_id'   => ['required', 'integer'],
 
             'payment_method'  => ['required', Rule::in(['cash', 'bank'])],
-            'fund_account_id' => ['required', 'exists:accounts,id'], // الحساب التجميعي الرئيسي للخزائن أو البنوك
+            'fund_account_id' => ['required', 'exists:accounts,id'], // الحساب التجميعي الرئيسي للخزائن أو البنوك النقدية
 
             // التحقق الشرطي المحمي للخزنة التحليلية
             'treasury_id'     => [
