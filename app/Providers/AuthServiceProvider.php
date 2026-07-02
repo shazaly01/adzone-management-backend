@@ -13,6 +13,7 @@ use App\Policies\TreasuryPolicy;
 use App\Policies\MessagePolicy;
 use App\Policies\PurchasePolicy;
 use App\Policies\SalePolicy;
+use App\Policies\DashboardPolicy;
 use Spatie\Permission\Models\Role;
 use Illuminate\Foundation\Support\Providers\AuthServiceProvider as ServiceProvider;
 use Illuminate\Support\Facades\Gate;
@@ -38,6 +39,9 @@ class AuthServiceProvider extends ServiceProvider
         \App\Models\JournalEntry::class => \App\Policies\JournalEntryPolicy::class,
         \App\Models\StockAdjustment::class => \App\Policies\StockAdjustmentPolicy::class,
         \App\Models\OpeningStock::class => \App\Policies\OpeningStockPolicy::class,
+
+        // تسجيل سياسة لوحة التحكم لتعمل بشكل مستقل بدون موديل مرتبك
+        DashboardPolicy::class => DashboardPolicy::class,
     ];
 
     /**

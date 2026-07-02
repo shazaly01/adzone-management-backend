@@ -131,7 +131,8 @@ class RoleController extends Controller
             'create'             => 'إنشاء',
             'update'             => 'تعديل',
             'delete'             => 'حذف',
-            'swap_raw_materials' => 'ملاءمة خامات الورشة', // [حقن برمجى حاسم]: لتمرير صلاحية الفني للواجهة
+            'swap_raw_materials' => 'ملاءمة خامات الورشة',
+            'manager'            => 'إشراف المدير',
         ];
 
         // 2. جلب كل الصلاحيات وتجميعها حسب المجموعة

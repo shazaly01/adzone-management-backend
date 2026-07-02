@@ -128,4 +128,29 @@ class ItemController extends Controller
         // إعادة مصفوفة خفيفة وموحدة الهيكلية عبر نفس الـ Resource
         return ItemResource::collection($updatedStocks);
     }
+
+
+
+    /**
+     * تحديث حد الطلب للصنف داخل مخزن محدد وتفويض العملية لطبقة الخدمة
+     */
+    public function updateReorderLevel(\App\Http\Requests\Item\UpdateItemReorderLevelRequest $request, string $id): JsonResponse
+    {
+        // 1. جلب الصنف والتحقق من صلاحية التعديل عبر الـ Policy المعتمدة بنظامك
+        $item = Item::findOrFail($id);
+        $this->authorize('update', $item);
+
+        // 2. استدعاء محرك الحفظ والتحديث الذكي من طبقة الخدمة
+        $this->itemService->updateReorderLevel(
+            (int) $id,
+            (int) $request->validated()['store_id'],
+            (float) $request->validated()['reorder_level']
+        );
+
+        // 3. إرجاع استجابة موحدة متوافقة مع معايير مشروعك
+        return response()->json([
+            'status'  => true,
+            'message' => 'تم تحديث حد الطلب للصنف بالمخزن المحدد بنجاح.'
+        ], 200);
+    }
 }

@@ -8,14 +8,28 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class ItemStock extends Model
 {
+    use HasFactory;
+
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var array<int, string>
+     */
     protected $fillable = [
         'item_id',
         'store_id',
         'current_quantity',
+        'reorder_level', // [إضافة]: لتسجيل وتحديث حد الطلب للصنف بالمخزن
     ];
 
+    /**
+     * The attributes that should be cast.
+     *
+     * @var array<string, string>
+     */
     protected $casts = [
         'current_quantity' => 'float',
+        'reorder_level'    => 'float', // [إضافة]: لضمان عودة القيمة رقمية عشرية دائماً
     ];
 
     /**
@@ -27,7 +41,7 @@ class ItemStock extends Model
     }
 
     /**
-     * الارتباط بالمخزن المتواجد به الكمية
+     * الارتباط بالمخزن المتواجد به الكمية وحد الطلب
      */
     public function store(): BelongsTo
     {

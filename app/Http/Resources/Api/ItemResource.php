@@ -35,6 +35,9 @@ class ItemResource extends JsonResource
             // التعديل المعماري: حقن المخزون اللحظي الفعلي بناءً على المخزن المحدد في طلب الفلترة الحالي
             'current_stock'  => (float) ($this->stocks->where('store_id', $currentStoreId)->first()?->current_quantity ?? 0),
 
+            // [إضافة]: حقن حد الطلب الفعلي المخصص لهذا المخزن بالتحديد لإطلاقه في شاشات التنبيه
+            'reorder_level'   => (float) ($this->stocks->where('store_id', $currentStoreId)->first()?->reorder_level ?? 0),
+
             // تجميع الهيكل الشجري اللانهائي والمصفوفة السعرية بالكامل للفرونت إند
             'units' => $this->units->map(function ($itemUnit) {
                 return [

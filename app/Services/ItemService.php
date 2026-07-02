@@ -180,37 +180,49 @@ class ItemService
     // =========================================================================
 
 /**
-     * جلب قائمة الأصناف المفلترة مع دمج الكمية اللحظية للمخزن المختار إن وجد
+     * جلب قائمة الأصناف المفلترة مع دمج الكمية اللحظية وحد الطلب للمخزن المختار إن وجد
      */
     public function searchWithStock(array $filters, ?int $storeId)
     {
-        $query = Item::with(['units.unit', 'units.barcodes', 'units.prices.priceList', 'baseUnit', 'category'])
-            ->when($storeId, function ($query) use ($storeId) {
-                $query->withSum(['stocks as current_stock' => function ($q) use ($storeId) {
+        $query = Item::with([
+            'units.unit',
+            'units.barcodes',
+            'units.prices.priceList',
+            'baseUnit',
+            'category',
+            // [التحديث المعماري]: شحن علاقة المخزون والحدود للمخزن المحدد مسبقاً لتسريع أداء الـ Resource ومنع الـ N+1
+            'stocks' => function ($q) use ($storeId) {
+                if ($storeId) {
                     $q->where('store_id', $storeId);
-                }], 'current_quantity');
-            })
-            ->when(isset($filters['search']), function ($query) use ($filters) {
-                $query->where(function ($subQuery) use ($filters) {
-                    $subQuery->where('name', 'like', '%' . $filters['search'] . '%')
-                             ->orWhereHas('barcodes', function ($q) use ($filters) {
-                                 $q->where('barcode', $filters['search']);
-                             });
-                });
-            })
-            ->when(isset($filters['item_type']), function ($query) use ($filters) {
-                $query->where('item_type', $filters['item_type']);
-            })
-            ->when(isset($filters['category_id']), function ($query) use ($filters) {
-                $query->where('category_id', $filters['category_id']);
-            })
-            ->when(isset($filters['is_active']), function ($query) use ($filters) {
-                $query->where('is_active', $filters['is_active']);
-            })
-            ->latest();
+                }
+            }
+        ])
+        ->when($storeId, function ($query) use ($storeId) {
+            $query->withSum(['stocks as current_stock' => function ($q) use ($storeId) {
+                $q->where('store_id', $storeId);
+            }], 'current_quantity');
+        })
+        ->when(isset($filters['search']), function ($query) use ($filters) {
+            $query->where(function ($subQuery) use ($filters) {
+                $subQuery->where('name', 'like', '%' . $filters['search'] . '%')
+                         ->orWhereHas('barcodes', function ($q) use ($filters) {
+                             $q->where('barcode', $filters['search']);
+                         });
+            });
+        })
+        ->when(isset($filters['item_type']), function ($query) use ($filters) {
+            $query->where('item_type', $filters['item_type']);
+        })
+        ->when(isset($filters['category_id']), function ($query) use ($filters) {
+            $query->where('category_id', $filters['category_id']);
+        })
+        ->when(isset($filters['is_active']), function ($query) use ($filters) {
+            $query->where('is_active', $filters['is_active']);
+        })
+        ->latest();
 
         // التبديل الديناميكي لحل مشكلة الصفحة الأولى عند البحث
-       return (isset($filters['all']) || request()->has('all')) ? $query->get() : $query->paginate(15);
+        return (isset($filters['all']) || request()->has('all')) ? $query->get() : $query->paginate(15);
     }
 
     /**
@@ -223,5 +235,40 @@ class ItemService
             ->whereIn('item_id', $itemIds)
             ->pluck('current_quantity', 'item_id')
             ->toArray();
+    }
+
+
+
+  /**
+     * تحديث أو إنشاء حد الطلب لصنف معين داخل مخزن محدد بأمان كامل وتوافقية مع الـ Casts
+     */
+    public function updateReorderLevel(int $itemId, int $storeId, float $reorderLevel): \App\Models\ItemStock
+    {
+        return DB::transaction(function () use ($itemId, $storeId, $reorderLevel) {
+            // التحقق من وجود الصنف أولاً لحماية سلامة البيانات
+            Item::findOrFail($itemId);
+
+            // البحث عن السجل الحالي أولاً لتجنب تصادم الـ DB::raw مع نظام الـ Casts في الموديل
+            $stock = \App\Models\ItemStock::where('item_id', $itemId)
+                ->where('store_id', $storeId)
+                ->first();
+
+            if ($stock) {
+                // إذا كان السجل موجوداً، نكتفي بتحديث حد الطلب فقط دون المساس بالكمية الحالية
+                $stock->update([
+                    'reorder_level' => $reorderLevel,
+                ]);
+            } else {
+                // إذا كان السجل جديداً، ننشئه بالكامل ونعطي الكمية الافتراضية صفر كقيمة رقمية آمنة
+                $stock = \App\Models\ItemStock::create([
+                    'item_id'          => $itemId,
+                    'store_id'         => $storeId,
+                    'reorder_level'    => $reorderLevel,
+                    'current_quantity' => 0.00,
+                ]);
+            }
+
+            return $stock;
+        });
     }
     }

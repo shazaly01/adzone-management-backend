@@ -46,7 +46,7 @@ Route::post('/login', [AuthController::class, 'login']);
 Route::middleware('auth:sanctum')->group(function () {
 
     // 1. لوحة التحكم (الإحصائيات)
-    Route::get('dashboard/stats', [DashboardController::class, 'stats']);
+    Route::get('/manager/dashboard/stats', [DashboardController::class, 'getStats']);
 
     // 2. إدارة النسخ الاحتياطي
     Route::prefix('backups')->name('backups.')->group(function () {
@@ -104,6 +104,7 @@ Route::get('price-lists', [PriceListController::class, 'index']);
 
    // 10. إدارة دليل الأصناف والخدمات والمواد الخام
     Route::post('items/refresh-stock', [ItemController::class, 'refreshStock'])->name('items.refresh_stock');
+    Route::put('items/{id}/reorder-level', [ItemController::class, 'updateReorderLevel']);
     Route::apiResource('items', ItemController::class);
 
     // مسارات موديول المشتريات ومردوداتها المدمج (تغطي الإضافة، التعديل الفوري، الحذف، والاستعراض)
