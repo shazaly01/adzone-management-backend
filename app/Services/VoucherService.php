@@ -22,6 +22,28 @@ class VoucherService
     }
 
     /**
+     * جلب السندات المالية المقسمة صفحات مع تطبيق فلاتر التصفية والبحث بشكل ديناميكي ميكانيكي
+     */
+    public function getPaginatedVouchers(array $filters = [], int $perPage = 15)
+    {
+        return Voucher::with(['account', 'fundAccount', 'treasury', 'bank', 'user', 'journalEntry'])
+            ->when($filters['voucher_type'] ?? null, function ($query, $voucherType) {
+                return $query->where('voucher_type', $voucherType);
+            })
+            ->when($filters['payment_method'] ?? null, function ($query, $paymentMethod) {
+                return $query->where('payment_method', $paymentMethod);
+            })
+            ->when($filters['search'] ?? null, function ($query, $search) {
+                return $query->where(function ($q) use ($search) {
+                    $q->where('voucher_number', 'like', "%{$search}%")
+                      ->orWhere('notes', 'like', "%{$search}%");
+                });
+            })
+            ->latest('voucher_date')
+            ->paginate($perPage);
+    }
+
+    /**
      * معالجة وحفظ سند مالي جديد (صرف أو قبض) وتوليد قيده المحاسبي فوراً مع الـ Sub-ledgers
      */
     public function createVoucher(array $data, int $userId): Voucher

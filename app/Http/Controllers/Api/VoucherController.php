@@ -10,6 +10,7 @@ use App\Http\Requests\Voucher\UpdateVoucherRequest;
 use App\Http\Resources\Api\VoucherResource;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Http\Request;
 use Exception;
 
 class VoucherController extends Controller
@@ -23,14 +24,12 @@ class VoucherController extends Controller
     }
 
     /**
-     * استعراض قائمة السندات المالية الموحدة مع التحميل المسبق لقنوات النقدية المساعدة
+     * استعراض قائمة السندات المالية الموحدة مع تفعيل التصفية والفلترة الذكية الممررة من الواجهة
      */
-    public function index(): AnonymousResourceCollection
+    public function index(Request $request): AnonymousResourceCollection
     {
-        // [تعديل معماري]: شحن علاقات الـ treasury والـ bank مسبقاً لخدمة الـ Resource
-        $vouchers = Voucher::with(['account', 'fundAccount', 'treasury', 'bank', 'user', 'journalEntry'])
-            ->latest('voucher_date')
-            ->paginate(15);
+        // استقبال كائن الطلب وتفويض الفلترة والبحث لطبقة الـ Service
+        $vouchers = $this->voucherService->getPaginatedVouchers($request->all(), 15);
 
         return VoucherResource::collection($vouchers);
     }
@@ -65,7 +64,7 @@ class VoucherController extends Controller
      */
     public function show(Voucher $voucher): JsonResponse
     {
-        // [تعديل معماري]: ترطيب السند المفرد بالعلاقات التحليلية المساعدة للنقدية فوراً
+        // ترطيب السند المفرد بالعلاقات التحليلية المساعدة للنقدية فوراً
         $voucher->load(['account', 'fundAccount', 'treasury', 'bank', 'user', 'journalEntry']);
 
         return response()->json([
