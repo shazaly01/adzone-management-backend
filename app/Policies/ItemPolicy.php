@@ -10,10 +10,14 @@ class ItemPolicy
     /**
      * Determine whether the user can view any models.
      */
-    public function viewAny(User $user): bool
-    {
-        return $user->hasPermissionTo('item.view');
-    }
+    /**
+ * Determine whether the user can view any models.
+ */
+public function viewAny(User $user): bool
+{
+    // 🌟 [التحديث البرمجي]: السماح بالعبور لمن يملك صلاحية الأصناف أو صلاحية تبديل خامات الورشة
+    return $user->hasPermissionTo('item.view') || $user->hasPermissionTo('sale.swap_raw_materials');
+}
 
     /**
      * Determine whether the user can view the model.
