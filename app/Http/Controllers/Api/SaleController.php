@@ -10,6 +10,7 @@ use App\Http\Requests\Sale\UpdateSaleRequest;
 use App\Http\Requests\Sale\SwapRawMaterialRequest;
 use App\Http\Resources\Api\SaleResource;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Exception;
 
@@ -27,14 +28,12 @@ class SaleController extends Controller
     }
 
     /**
-     * استعراض قائمة فواتير المبيعات ومرتجع الكاشير مع التحميل المسبق للعلاقات لتوحيد هيكل الرد
+     * استعراض قائمة فواتير المبيعات ومرتجع الكاشير مع تطبيق الفلاتر ونطاق التاريخ ديناميكياً
      */
-    public function index(): AnonymousResourceCollection
+    public function index(Request $request): AnonymousResourceCollection
     {
-        // التعديل المعماري: شحن الفاتورة بكافة سطورها عبر علاقة العبور الآمن المحدثة items.itemUnit.unit لمنع الـ N+1 Query
-        $sales = Sale::with(['store', 'customer', 'user', 'items.item', 'items.itemUnit.unit', 'treasury', 'bank'])
-            ->latest('invoice_date')
-            ->paginate(15);
+        // تمرير جميع معاملات التصفية المرسلة من الواجهة الأمامية مباشرة إلى محرك الخدمة
+        $sales = $this->saleService->getPaginatedSales($request->all(), 15);
 
         return SaleResource::collection($sales);
     }

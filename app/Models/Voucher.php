@@ -44,8 +44,9 @@ class Voucher extends Model
         parent::boot();
 
         static::creating(function ($voucher) {
-            // جلب آخر تسلسل بناءً على نوع السند بشكل منعزل
-            $lastSequence = self::where('voucher_type', $voucher->voucher_type)
+            // التعديل: استخدام withTrashed() لضمان احتساب السندات المحذوفة ناعماً وتجنب تكرار الأرقام
+            $lastSequence = self::withTrashed()
+                ->where('voucher_type', $voucher->voucher_type)
                 ->max('voucher_sequence');
 
             $nextSequence = $lastSequence ? $lastSequence + 1 : 1;

@@ -35,8 +35,8 @@ class StockAdjustment extends Model
         parent::boot();
 
         static::creating(function ($adjustment) {
-            // احتساب التسلسل التالي بناءً على آخر رقم مسجل في النظام
-            $lastSequence = self::max('adjustment_sequence');
+            // التعديل: استخدام withTrashed() لتضمين حركات التسوية المحذوفة ناعماً وتفادي تكرار المتسلسلة
+            $lastSequence = self::withTrashed()->max('adjustment_sequence');
             $nextSequence = $lastSequence ? $lastSequence + 1 : 1;
 
             $adjustment->adjustment_sequence = $nextSequence;

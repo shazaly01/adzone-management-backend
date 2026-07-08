@@ -31,6 +31,51 @@ class SaleService
     }
 
     /**
+     * جلب فواتير المبيعات ممررة عبر الـ Pagination مع تطبيق الفلاتر المتقدمة ونطاق التاريخ
+     */
+    public function getPaginatedSales(array $filters = [], int $perPage = 15)
+    {
+        // بناء الاستعلام الأساسي مع شحن كافة العلاقات لمنع الـ N+1 Query
+        $query = Sale::with(['store', 'customer', 'user', 'items.item', 'items.itemUnit.unit', 'treasury', 'bank']);
+
+        // 1. فلتر البحث السريع (رقم الفاتورة أو الملاحظات)
+        if (!empty($filters['search'])) {
+            $search = $filters['search'];
+            $query->where(function ($q) use ($search) {
+                $q->where('invoice_number', 'like', "%{$search}%")
+                  ->orWhere('notes', 'like', "%{$search}%");
+            });
+        }
+
+        // 2. فلتر نوع المستند (فاتورة مبيعات / مردودات)
+        if (!empty($filters['invoice_type'])) {
+            $query->where('invoice_type', $filters['invoice_type']);
+        }
+
+        // 3. فلتر مخزن الصرف
+        if (!empty($filters['store_id'])) {
+            $query->where('store_id', $filters['store_id']);
+        }
+
+        // 4. فلتر حساب العميل
+        if (!empty($filters['customer_id'])) {
+            $query->where('customer_id', $filters['customer_id']);
+        }
+
+        // 5. فلتر تاريخ البداية (من تاريخ)
+        if (!empty($filters['from_date'])) {
+            $query->whereDate('invoice_date', '>=', $filters['from_date']);
+        }
+
+        // 6. فلتر تاريخ النهاية (إلى تاريخ)
+        if (!empty($filters['to_date'])) {
+            $query->whereDate('invoice_date', '<=', $filters['to_date']);
+        }
+
+        // الترتيب من الأحدث للأقدم وإرجاع النتائج مصفحة
+        return $query->latest('invoice_date')->paginate($perPage);
+    }
+    /**
      * معالجة وحفظ فاتورة مبيعات أو مرتجع كاشير جديدة بالكامل
      */
     public function createSale(array $data, int $userId): Sale
