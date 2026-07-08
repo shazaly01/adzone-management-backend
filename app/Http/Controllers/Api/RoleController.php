@@ -95,12 +95,12 @@ class RoleController extends Controller
      * Get all available permissions.
      * هذه الدالة لا يتم حمايتها بـ authorizeResource، لذا نضيف الصلاحية يدويًا
      */
-   public function getAllPermissions()
+public function getAllPermissions()
     {
         $this->authorize('viewAny', Role::class);
 
-        // 1. قاموس الترجمة
-       $groupTranslations = [
+        // 1. قاموس الترجمة للمجموعات الأساسية
+        $groupTranslations = [
             'dashboard'        => 'لوحة التحكم',
             'user'             => 'المستخدمون',
             'role'             => 'الأدوار الصلاحية',
@@ -126,6 +126,7 @@ class RoleController extends Controller
             'report'           => 'قسم التقارير الموحد',
         ];
 
+        // [تعديل جوهري]: إضافة مفاتيح الإجراءات المحدثة للتقارير لضمان مطابقتها وعدم حجبها
         $actionTranslations = [
             'view'               => 'عرض',
             'create'             => 'إنشاء',
@@ -133,6 +134,11 @@ class RoleController extends Controller
             'delete'             => 'حذف',
             'swap_raw_materials' => 'ملاءمة خامات الورشة',
             'manager'            => 'إشراف المدير',
+            'financial'          => 'المالية',
+            'inventory'          => 'المخزنية',
+            'account_statement'  => 'كشف الحساب الرئيسي',
+            'sub_ledger'         => 'كشف الحساب المساعد', // <-- إضافة الترجمة البرمجية هنا
+            'trial_balance'      => 'ميزان المراجعة',
         ];
 
         // 2. جلب كل الصلاحيات وتجميعها حسب المجموعة
@@ -146,7 +152,7 @@ class RoleController extends Controller
             $groupPermissions = [];
             foreach ($permissionGroup as $p) {
                 $actionKey = explode('.', $p->name)[1];
-                // تأكد من أن الإجراء موجود في قاموس الترجمة قبل إضافته
+                // تأكد من أن الإجراء موجود في قاموس الترجمة قبل إضافته لمنع الـ Crash
                 if (array_key_exists($actionKey, $actionTranslations)) {
                     $groupPermissions[] = [
                         'id' => $p->id,
@@ -170,7 +176,7 @@ class RoleController extends Controller
             return ['key' => $key, 'display_name' => $displayName];
         })->values();
 
-        // 5. إرجاع الاستجابة النهائية
+        // 5. إرجاع الاستجابة النهائية للـ API
         return response()->json([
             'groups' => $structuredGroups,
             'actions' => $allActions,

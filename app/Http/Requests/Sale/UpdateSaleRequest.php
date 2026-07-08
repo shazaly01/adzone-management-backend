@@ -66,7 +66,7 @@ class UpdateSaleRequest extends FormRequest
             // --- قواعد مصفوفة السطور (Items) بناءً على معمارية الوحدات المحدثة ---
             'items'                  => ['required', 'array', 'min:1'],
             'items.*.item_id'        => ['required', 'exists:items,id'],
-            'items.*.item_unit_id'   => ['required', 'exists:item_units,id', 'distinct'],
+            'items.*.item_unit_id'   => ['required', 'exists:item_units,id'],
             'items.*.quantity'       => ['required', 'numeric', 'gt:0'],
             'items.*.unit_price'     => ['required', 'numeric', 'min:0'],
             'items.*.subtotal'       => ['required', 'numeric', 'min:0'],
