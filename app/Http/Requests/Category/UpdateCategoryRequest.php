@@ -23,7 +23,6 @@ class UpdateCategoryRequest extends FormRequest
                 'not_in:' . $categoryId
             ],
             'name'      => ['required', 'string', 'max:191', 'unique:categories,name,' . $categoryId],
-            'is_active' => ['required', 'boolean'],
         ];
     }
 

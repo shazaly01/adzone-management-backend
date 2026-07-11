@@ -16,7 +16,6 @@ class StoreUnitRequest extends FormRequest
         return [
             'name'       => ['required', 'string', 'max:100', 'unique:units,name'],
             'short_name' => ['nullable', 'string', 'max:50'],
-            'is_active'  => ['nullable', 'boolean'],
         ];
     }
 
