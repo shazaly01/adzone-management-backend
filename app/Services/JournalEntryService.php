@@ -236,33 +236,48 @@ class JournalEntryService
         }
     }
 
-    /**
-     * تحديث أرصدة الجداول المساعدة (أصبحت دالة موحدة ومعمارية نظيفة تدعم المصروفات تلقائياً)
-     */
-    private function applySubLedgerChanges(array $subChanges, string $entryType): void
-    {
-        ksort($subChanges);
+  /**
+ * تحديث أرصدة الجداول المساعدة (نسخة معمارية نقية معزولة بدون آثار جانبية)
+ */
+private function applySubLedgerChanges(array $subChanges, string $entryType): void
+{
+    ksort($subChanges);
 
-        foreach ($subChanges as $change) {
-            if (round($change['effect'], 4) == 0) {
-                continue;
-            }
+    foreach ($subChanges as $change) {
+        if (round($change['effect'], 4) == 0) {
+            continue;
+        }
 
-            $modelClass = Relation::getMorphedModel($change['type']) ?? $change['type'];
+        // 1. القراءة الطبيعية للموديل من لارافيل
+        $modelClass = \Illuminate\Database\Eloquent\Relations\Relation::getMorphedModel($change['type']) ?? $change['type'];
 
-            if (class_exists($modelClass)) {
-                $subLedgerInstance = $modelClass::lockForUpdate()->find($change['id']);
+        // 2. الحل الهندسي المحلي: إذا كان الاسم مختصراً ولم يعثر عليه لارافيل، نترجمه محلياً هنا فقط
+        if (!class_exists($modelClass)) {
+            $modelClass = match (strtolower($change['type'])) {
+                'customer', 'client' => \App\Models\Customer::class,
+                'supplier'           => \App\Models\Supplier::class,
+                'treasury'           => \App\Models\Treasury::class,
+                'bank'               => \App\Models\Bank::class,
+                'expense'            => \App\Models\Expense::class,
+                'user', 'designer'   => \App\Models\User::class,
+                default              => $modelClass
+            };
+        }
 
-                if ($subLedgerInstance) {
-                    $subLedgerInstance->current_balance += $change['effect'];
+        // 3. التنفيذ الآمن بعد تأكيد وجود الكلاس
+        if (class_exists($modelClass)) {
+            $subLedgerInstance = $modelClass::lockForUpdate()->find($change['id']);
 
-                    if ($entryType === 'opening_balance') {
-                        $subLedgerInstance->opening_balance += $change['effect'];
-                    }
+            if ($subLedgerInstance) {
+                $subLedgerInstance->current_balance += $change['effect'];
 
-                    $subLedgerInstance->save();
+                if ($entryType === 'opening_balance') {
+                    $subLedgerInstance->opening_balance += $change['effect'];
                 }
+
+                $subLedgerInstance->save();
             }
         }
     }
+}
 }
