@@ -21,12 +21,12 @@ class VoucherService
         $this->journalService = $journalService;
     }
 
-    /**
+   /**
      * جلب السندات المالية المقسمة صفحات مع تطبيق فلاتر التصفية والبحث بشكل ديناميكي ميكانيكي
      */
     public function getPaginatedVouchers(array $filters = [], int $perPage = 15)
     {
-        return Voucher::with(['account', 'fundAccount', 'treasury', 'bank', 'user', 'journalEntry'])
+        return Voucher::with(['account', 'fundAccount', 'treasury', 'bank', 'subLedger', 'user', 'journalEntry'])
             ->when($filters['voucher_type'] ?? null, function ($query, $voucherType) {
                 return $query->where('voucher_type', $voucherType);
             })

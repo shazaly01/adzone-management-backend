@@ -58,6 +58,27 @@ class Voucher extends Model
         });
     }
 
+
+    /**
+     * مسترجع ذكي لترجمة الكلمات المختصرة للحسابات المساعدة إلى كلاسات صلبة عند القراءة الجارية
+     */
+    public function getSubLedgerTypeAttribute($value)
+    {
+        if (empty($value)) {
+            return $value;
+        }
+
+        return match (strtolower(trim($value))) {
+            'customer', 'client' => \App\Models\Customer::class,
+            'supplier'           => \App\Models\Supplier::class,
+            'treasury'           => \App\Models\Treasury::class,
+            'bank'               => \App\Models\Bank::class,
+            'expense'            => \App\Models\Expense::class,
+            'user', 'designer'   => \App\Models\User::class,
+            default              => $value
+        };
+    }
+
     /**
      * ارتباط السند بالحساب المالي المستهدف (شجرة الحسابات العامة)
      */
