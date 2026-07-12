@@ -103,60 +103,65 @@ class FinancialReportController extends Controller
         ]);
     }
 
-   /**
- * 2. كشف حساب الكيانات المساعدة (Sub-Ledger Statement)
- * مطور ومعدل لدعم حسابات المصممين والخزائن إلى جانب العملاء والموردين والبنوك
- */
-public function subLedgerStatement(Request $request): JsonResponse
-{
-    $request->validate([
-        'sub_ledger_type' => ['required', 'string'],
-        'sub_ledger_id'   => ['required', 'integer'],
-    ]);
+ /**
+     * 2. كشف حساب الكيانات المساعدة (Sub-Ledger Statement)
+     * نسخة معمارية مطورة تدعم تحديد الهوية المستندية العكسية (Source ID/Type) للتأصيل المستندي في الواجهة
+     */
+    public function subLedgerStatement(Request $request): JsonResponse
+    {
+        $request->validate([
+            'sub_ledger_type' => ['required', 'string'],
+            'sub_ledger_id'   => ['required', 'integer'],
+        ]);
 
-    $type = $request->sub_ledger_type;
-    $id = $request->sub_ledger_id;
-    $fromDate = $request->from_date ? Carbon::parse($request->from_date)->startOfDay() : null;
-    $toDate = $request->to_date ? Carbon::parse($request->to_date)->endOfDay() : null;
+        $type = $request->sub_ledger_type;
+        $id = $request->sub_ledger_id;
+        $fromDate = $request->from_date ? Carbon::parse($request->from_date)->startOfDay() : null;
+        $toDate = $request->to_date ? Carbon::parse($request->to_date)->endOfDay() : null;
 
-    // هندسة مصفوفة مسميات متعددة لضمان جلب الحركة سواء سُجلت باسم الفئة الكامل أو الكود المختصر
-    $morphTypes = [$type];
-    if (str_contains(strtolower($type), 'supplier')) {
-        $morphTypes = ['App\Models\Supplier', 'supplier'];
-    } elseif (str_contains(strtolower($type), 'customer') || str_contains(strtolower($type), 'client')) {
-        $morphTypes = ['App\Models\Customer', 'customer'];
-    } elseif (str_contains(strtolower($type), 'bank')) {
-        $morphTypes = ['App\Models\Bank', 'bank'];
-    } elseif (str_contains(strtolower($type), 'treasury')) {
-        $morphTypes = ['App\Models\Treasury', 'treasury'];
-    } elseif (str_contains(strtolower($type), 'designer') || str_contains(strtolower($type), 'user')) {
-        $morphTypes = ['App\Models\User', 'designer', 'user'];
-    }
+        // هندسة مصفوفة مسميات متعددة لضمان جلب الحركة سواء سُجلت باسم الفئة الكامل أو الكود المختصر
+        $morphTypes = [$type];
+        if (str_contains(strtolower($type), 'supplier')) {
+            $morphTypes = ['App\Models\Supplier', 'supplier'];
+        } elseif (str_contains(strtolower($type), 'customer') || str_contains(strtolower($type), 'client')) {
+            $morphTypes = ['App\Models\Customer', 'customer'];
+        } elseif (str_contains(strtolower($type), 'bank')) {
+            $morphTypes = ['App\Models\Bank', 'bank'];
+        } elseif (str_contains(strtolower($type), 'treasury')) {
+            $morphTypes = ['App\Models\Treasury', 'treasury'];
+        } elseif (str_contains(strtolower($type), 'designer') || str_contains(strtolower($type), 'user')) {
+            $morphTypes = ['App\Models\User', 'designer', 'user'];
+        }
 
-    // تحديد طبيعة التعامل لمحاكاة الرصيد الجاري بشكل محاسبي صحيح
-    // (العملاء، البنوك، والخزائن أصول/مدينون بطبيعتهم | الموردون والمصممون التزامات/دائنون بطبيعتهم)
-    $isDebitNature = str_contains(strtolower($type), 'customer') ||
-                     str_contains(strtolower($type), 'client') ||
-                     str_contains(strtolower($type), 'bank') ||
-                     str_contains(strtolower($type), 'treasury');
+        // تحديد طبيعة التعامل لمحاكاة الرصيد الجاري بشكل محاسبي صحيح
+        $isDebitNature = str_contains(strtolower($type), 'customer') ||
+                         str_contains(strtolower($type), 'client') ||
+                         str_contains(strtolower($type), 'bank') ||
+                         str_contains(strtolower($type), 'treasury');
 
-    // أ: احتساب الرصيد الافتتاحي مع دعم مصفوفة المسميات الموحدة
-    if ($fromDate) {
-        $openingQuery = JournalEntryLine::whereIn('sub_ledger_type', $morphTypes)
-            ->where('sub_ledger_id', $id)
-            ->whereHas('journalEntry', function ($q) use ($fromDate) {
-                $q->where('entry_date', '<', $fromDate);
-            });
+        // أ: احتساب الرصيد الافتتاحي مع دعم مصفوفة المسميات الموحدة
+        if ($fromDate) {
+            $openingQuery = JournalEntryLine::whereIn('sub_ledger_type', $morphTypes)
+                ->where('sub_ledger_id', $id)
+                ->whereHas('journalEntry', function ($q) use ($fromDate) {
+                    $q->where('entry_date', '<', $fromDate);
+                });
 
-        $openingDebit = (float) $openingQuery->sum('debit');
-        $openingCredit = (float) $openingQuery->sum('credit');
-        $openingBalance = $isDebitNature ? ($openingDebit - $openingCredit) : ($openingCredit - $openingDebit);
-    } else {
-        $openingBalance = 0.00;
-    }
+            $openingDebit = (float) $openingQuery->sum('debit');
+            $openingCredit = (float) $openingQuery->sum('credit');
+            $openingBalance = $isDebitNature ? ($openingDebit - $openingCredit) : ($openingCredit - $openingDebit);
+        } else {
+            $openingBalance = 0.00;
+        }
 
-    // ب: جلب الحركات التفصيلية للكيان مع دعم المسميات المزدوجة لدمج السندات والفواتير معاً
-    $linesQuery = JournalEntryLine::with(['journalEntry', 'account'])
+        // ب: جلب الحركات التفصيلية للكيان مع شحن العلاقات العكسية للمستندات ذرياً في الذاكرة لمنع الـ N+1 Queries كلياً
+        $linesQuery = JournalEntryLine::with([
+            'journalEntry.lines.account',
+            'account',
+            'journalEntry.sale',
+            'journalEntry.purchase',
+            'journalEntry.voucher'
+        ])
         ->whereIn('sub_ledger_type', $morphTypes)
         ->where('sub_ledger_id', $id)
         ->whereHas('journalEntry', function ($q) use ($fromDate, $toDate) {
@@ -164,48 +169,133 @@ public function subLedgerStatement(Request $request): JsonResponse
             if ($toDate) $q->where('entry_date', '<=', $toDate);
         });
 
-    $lines = $linesQuery->join('journal_entries', 'journal_entry_lines.journal_entry_id', '=', 'journal_entries.id')
-        ->orderBy('journal_entries.entry_date', 'asc')
-        ->orderBy('journal_entry_lines.id', 'asc')
-        ->select('journal_entry_lines.*')
-        ->get();
+        $lines = $linesQuery->join('journal_entries', 'journal_entry_lines.journal_entry_id', '=', 'journal_entries.id')
+            ->orderBy('journal_entries.entry_date', 'asc')
+            ->orderBy('journal_entry_lines.id', 'asc')
+            ->select('journal_entry_lines.*')
+            ->get();
 
-    $runningBalance = $openingBalance;
-    $reportLines = [];
+        $runningBalance = $openingBalance;
+        $reportLines = [];
 
-    foreach ($lines as $line) {
-        $debit = (float) $line->debit;
-        $credit = (float) $line->credit;
+        foreach ($lines as $line) {
+            $debit = (float) $line->debit;
+            $credit = (float) $line->credit;
 
-        if ($isDebitNature) {
-            $runningBalance += ($debit - $credit);
-        } else {
-            $runningBalance += ($credit - $debit);
+            if ($isDebitNature) {
+                $runningBalance += ($debit - $credit);
+            } else {
+                $runningBalance += ($credit - $debit);
+            }
+
+            // 1. هندسة استخراج الحساب المقابل الرئيسي بناءً على الفرز التشغيلي والوزن المالي للأعلى قيمة
+            $counterpartAccountName = null;
+            if ($line->journalEntry && $line->journalEntry->lines) {
+                $isCurrentLineDebit = $debit > 0;
+
+                $oppositeLines = $line->journalEntry->lines->filter(function ($entryLine) use ($isCurrentLineDebit) {
+                    return $isCurrentLineDebit ? (float)$entryLine->credit > 0 : (float)$entryLine->debit > 0;
+                });
+
+                if ($oppositeLines->isNotEmpty()) {
+                    $operationalLines = $oppositeLines->filter(function ($oppLine) {
+                        $code = $oppLine->account->code ?? '';
+                        return !in_array($code, [Account::CODE_INVENTORY, Account::CODE_COGS]);
+                    });
+
+                    $finalOppositeLines = $operationalLines->isNotEmpty() ? $operationalLines : $oppositeLines;
+
+                    $accountWeights = [];
+                    foreach ($finalOppositeLines as $oppLine) {
+                        $accName = $oppLine->account->name ?? null;
+                        if ($accName) {
+                            $value = $isCurrentLineDebit ? (float)$oppLine->credit : (float)$oppLine->debit;
+                            $accountWeights[$accName] = ($accountWeights[$accName] ?? 0) + $value;
+                        }
+                    }
+
+                    if (!empty($accountWeights)) {
+                        arsort($accountWeights);
+                        $counterpartAccountName = key($accountWeights);
+                    }
+                } else {
+                    $otherLine = $line->journalEntry->lines->filter(fn($el) => $el->id !== $line->id)->first();
+                    $counterpartAccountName = $otherLine->account->name ?? ($line->account->name ?? null);
+                }
+            } else {
+                $counterpartAccountName = $line->account->name ?? null;
+            }
+
+            // 2. طبقة التطهير الدلالي الحصينة لقنص الكلمات المفتاحية واختصارها فوراً لواجهات الكاشير
+            if ($counterpartAccountName) {
+                $counterpartAccountName = trim($counterpartAccountName);
+
+                if (str_contains($counterpartAccountName, 'إيرادات') || str_contains($counterpartAccountName, 'مبيعات')) {
+                    $counterpartAccountName = 'المبيعات';
+                } elseif (str_contains($counterpartAccountName, 'المصروفات') || str_contains($counterpartAccountName, 'مصروفات')) {
+                    $counterpartAccountName = 'مصروفات تشغيلية';
+                } elseif (str_contains($counterpartAccountName, 'المخزون')) {
+                    $counterpartAccountName = 'المخزون الرئيسي';
+                } elseif (str_contains($counterpartAccountName, 'الخزائن') || str_contains($counterpartAccountName, 'الخزينة')) {
+                    $counterpartAccountName = 'الخزينة الرئيسية';
+                } elseif (str_contains($counterpartAccountName, 'البنوك') || str_contains($counterpartAccountName, 'المصارف')) {
+                    $counterpartAccountName = 'البنوك';
+                } elseif (str_contains($counterpartAccountName, 'العملاء')) {
+                    $counterpartAccountName = 'العملاء';
+                } elseif (str_contains($counterpartAccountName, 'الموردين')) {
+                    $counterpartAccountName = 'الموردين';
+                } else {
+                    $counterpartAccountName = preg_replace('/^حساب\s+/u', '', $counterpartAccountName);
+                    $counterpartAccountName = preg_replace('/\s+الرئيسي$/u', '', $counterpartAccountName);
+                    $counterpartAccountName = preg_replace('/\s+الإجمالي$/u', '', $counterpartAccountName);
+                    $counterpartAccountName = preg_replace('/\s+الشامل$/u', '', $counterpartAccountName);
+                    $counterpartAccountName = preg_replace('/\s+المساعد$/u', '', $counterpartAccountName);
+                }
+            }
+
+            // 3. هندسة كشف التأصيل المستندي العكسي: فحص أي العلاقات مشحونة في الذاكرة وتحديد هوية المستند الأب
+            $sourceType = null;
+            $sourceId = null;
+
+            if ($line->journalEntry) {
+                if ($line->journalEntry->sale) {
+                    $sourceType = 'sale';
+                    $sourceId = $line->journalEntry->sale->id;
+                } elseif ($line->journalEntry->purchase) {
+                    $sourceType = 'purchase';
+                    $sourceId = $line->journalEntry->purchase->id;
+                } elseif ($line->journalEntry->voucher) {
+                    // استخراج نوع السند ديناميكياً بناءً على حقل الحالة التشغيلية الفعلي (payment أو receipt)
+                    $sourceType = $line->journalEntry->voucher->voucher_type;
+                    $sourceId = $line->journalEntry->voucher->id;
+                }
+            }
+
+            $reportLines[] = [
+                'id'            => $line->id,
+                'entry_number'  => $line->journalEntry->entry_number ?? null,
+                'entry_date'    => $line->journalEntry->entry_date ? $line->journalEntry->entry_date->format('Y-m-d') : null,
+                'account_name'  => $counterpartAccountName,
+                'line_notes'    => $line->line_notes ?? $line->journalEntry->notes ?? null,
+                'debit'         => $debit,
+                'credit'        => $credit,
+                'running_total' => round($runningBalance, 2),
+                'source_type'   => $sourceType,
+                'source_id'     => $sourceId,
+            ];
         }
 
-        $reportLines[] = [
-            'id'            => $line->id,
-            'entry_number'  => $line->journalEntry->entry_number ?? null,
-            'entry_date'    => $line->journalEntry->entry_date ? $line->journalEntry->entry_date->format('Y-m-d') : null,
-            'account_name'  => $line->account->name ?? null,
-            'line_notes'    => $line->line_notes ?? $line->journalEntry->notes ?? null,
-            'debit'         => $debit,
-            'credit'        => $credit,
-            'running_total' => round($runningBalance, 2)
-        ];
+        return response()->json([
+            'success' => true,
+            'meta'    => [
+                'sub_ledger_type' => $type,
+                'sub_ledger_id'   => (int) $id,
+                'opening_balance' => round($openingBalance, 2),
+                'closing_balance' => round($runningBalance, 2)
+            ],
+            'data'    => $reportLines
+        ]);
     }
-
-    return response()->json([
-        'success' => true,
-        'meta'    => [
-            'sub_ledger_type' => $type,
-            'sub_ledger_id'   => (int) $id,
-            'opening_balance' => round($openingBalance, 2),
-            'closing_balance' => round($runningBalance, 2)
-        ],
-        'data'    => $reportLines
-    ]);
-}
 
     /**
      * 3. ميزان المراجعة (Trial Balance)
