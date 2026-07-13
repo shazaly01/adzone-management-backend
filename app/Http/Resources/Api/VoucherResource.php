@@ -24,12 +24,12 @@ class VoucherResource extends JsonResource
             'voucher_sequence'   => $this->voucher_sequence,
             'voucher_number'     => $this->voucher_number,
 
-            // الحساب المستهدف: يظهر اسم الحساب المساعد الفعلي (عميل، مورد، مصروف) بدلاً من الاسم التجميعي الإجمالي
+            // الحساب المستهدف: يظهر اسم الحساب المساعد الفعلي بدلاً من الاسم التجميعي الإجمالي
             'account_id'         => $this->account_id,
             'account_name'       => $this->subLedger->name ?? $this->account->name ?? null,
 
-            // حقول الحساب المساعد التابع للأستاذ العام للتدقيق الخارجي
-            'sub_ledger_type'    => $this->sub_ledger_type,
+            // [تعديل جوهري]: تنظيف اسم الكلاس وإرجاع الاسم الصغير للفرونت إند (مثل customer) لحماية الشروط والأيقونات
+            'sub_ledger_type'    => $this->sub_ledger_type ? strtolower(class_basename($this->sub_ledger_type)) : null,
             'sub_ledger_id'      => $this->sub_ledger_id,
             'sub_ledger_name'    => $this->subLedger->name ?? null,
 

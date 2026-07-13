@@ -40,11 +40,12 @@ class DashboardService
         ];
     }
 
-    /**
-     * حساب الإحصائيات المالية ومعدلات استهلاك الخامات بالأمتار المربعة لكل صنف دون حد أقصى
+ /**
+     * حساب الإحصائيات المالية ومعدلات استهلاك الخامات بالأمتار المربعة لكل صنف دون حد أقصى (نسخة محسنة الأداء)
      */
     private function calculateFinancialAndMeterStats(Carbon $from, Carbon $to): array
     {
+        // 1. جلب صافي المبيعات المالية في خطوة واحدة
         $salesData = DB::table('sales')
             ->whereNull('deleted_at')
             ->whereBetween('invoice_date', [$from, $to])
@@ -53,22 +54,7 @@ class DashboardService
             ])
             ->first();
 
-        $meterData = DB::table('sale_items')
-            ->join('sales', 'sale_items.sale_id', '=', 'sales.id')
-            ->join('items', 'sale_items.item_id', '=', 'items.id')
-            ->whereNull('sales.deleted_at')
-            ->whereNull('items.deleted_at')
-            ->where('items.is_dimensional', true)
-            ->whereBetween('sales.invoice_date', [$from, $to])
-            ->select([
-                DB::raw("SUM(CASE WHEN sales.invoice_type = 'sale'
-                    THEN (COALESCE(sale_items.length, 0) * COALESCE(sale_items.width, 0) * COALESCE(sale_items.quantity, 0))
-                    ELSE -(COALESCE(sale_items.length, 0) * COALESCE(sale_items.width, 0) * COALESCE(sale_items.quantity, 0))
-                    END) as total_meters")
-            ])
-            ->first();
-
-        // التحديث: جلب قائمة بكل الخامات المستهلكة مرتبة تنازلياً من الأعلى للأقل دون التقيد بـ 5 أصناف فقط
+        // 2. جلب الحركات التفصيلية للأصناف مجمعة (استعلام واحد فقط يربط الجداول الثلاثة)
         $allConsumedItems = SaleItem::join('sales', 'sale_items.sale_id', '=', 'sales.id')
             ->join('items', 'sale_items.item_id', '=', 'items.id')
             ->whereNull('sales.deleted_at')
@@ -84,22 +70,27 @@ class DashboardService
                     END) as consumed_meters")
             ])
             ->groupBy('sale_items.item_id', 'items.name')
-            ->having('consumed_meters', '>', 0.00)
             ->orderByDesc('consumed_meters')
-            ->get()
-            ->map(function ($item) {
-                return [
-                    'item_id'         => $item->item_id,
-                    'item_name'       => $item->item_name,
-                    'consumed_meters' => (float) $item->consumed_meters
-                ];
-            })
-            ->toArray();
+            ->get();
+
+        // 3. [تحسين حرج]: احتساب الإجمالي الكلي في الذاكرة عبر PHP لتوفير استعلام Join كامل على السيرفر
+        $totalMeters = (float) $allConsumedItems->sum('consumed_meters');
+
+        // 4. فلترة الأصناف ذات الاستهلاك الفعلي وتنسيق المصفوفة النهائية للواجهة
+        $formattedItems = $allConsumedItems->filter(function ($item) {
+            return $item->consumed_meters > 0.00;
+        })->map(function ($item) {
+            return [
+                'item_id'         => $item->item_id,
+                'item_name'       => $item->item_name,
+                'consumed_meters' => (float) $item->consumed_meters
+            ];
+        })->values()->toArray();
 
         return [
             'net_sales_amount'  => $salesData->net_sales ?? 0.00,
-            'net_square_meters' => $meterData->total_meters ?? 0.00,
-            'top_items'         => $allConsumedItems
+            'net_square_meters' => $totalMeters, // النتيجة هنا مطابقة تماماً وبأداء أسرع
+            'top_items'         => $formattedItems
         ];
     }
 

@@ -10,20 +10,42 @@ use App\Models\User;
 class UpdateVoucherRequest extends FormRequest
 {
     /**
-     * التحقق من صلاحية المستخدم لتعديل السند المالي بناءً على الـ Policy
+     * التحقق من صلاحية المستخدم لتعديل هذا السند المالي المحدد
      */
     public function authorize(): bool
     {
-        return $this->user()->can('update', $this->route('voucher'));
+        $voucher = $this->route('voucher');
+        return $this->user()->can('update', $voucher);
     }
 
     /**
-     * [حقن معماري ذكي]: اعتراض البيانات قبل الفحص لحل مشكلة الحسابات المساعدة تلقائياً عند التعديل
+     * اعتراض البيانات قبل الفحص لحل مشكلة الحسابات المساعدة وتحويلها إلى كلاسات كاملة عند التعديل
      */
     protected function prepareForValidation()
     {
-        // إذا كان نوع الحساب المساعد مصمم، نقوم بدمج معرف حسابه التجميعي (2103) آلياً
-        if (in_array($this->input('sub_ledger_type'), ['designer', 'user', User::class])) {
+        $typeMap = [
+            'customer' => \App\Models\Customer::class,
+            'client'   => \App\Models\Customer::class,
+            'supplier' => \App\Models\Supplier::class,
+            'treasury' => \App\Models\Treasury::class,
+            'bank'     => \App\Models\Bank::class,
+            'expense'  => \App\Models\Expense::class,
+            'user'     => \App\Models\User::class,
+            'designer' => \App\Models\User::class,
+        ];
+
+        $subLedgerType = $this->input('sub_ledger_type');
+
+        // ترجمة النص المختصر إلى الاسم الكامل للكلاس إذا وجد في مصفوفة المطابقة
+        if (array_key_exists($subLedgerType, $typeMap)) {
+            $subLedgerType = $typeMap[$subLedgerType];
+            $this->merge([
+                'sub_ledger_type' => $subLedgerType,
+            ]);
+        }
+
+        // إذا كان نوع الحساب المساعد مصمم أو موظف، نقوم بدمج معرف حسابه التجميعي آلياً
+        if ($subLedgerType === \App\Models\User::class) {
             $account = Account::where('code', Account::CODE_DESIGNERS_LEDGER)->first();
 
             $this->merge([
@@ -31,8 +53,8 @@ class UpdateVoucherRequest extends FormRequest
             ]);
         }
 
-        // إذا كان نوع الحساب المساعد بنك، نقوم بدمج معرف حسابه التجميعي الرئيسي (1102) آلياً
-        if ($this->input('sub_ledger_type') === 'bank') {
+        // إذا كان نوع الحساب المساعد بنك، نقوم بدمج معرف حسابه التجميعي الرئيسي آلياً
+        if ($subLedgerType === \App\Models\Bank::class) {
             $account = Account::where('code', Account::CODE_BANKS)->first();
 
             $this->merge([
@@ -40,8 +62,8 @@ class UpdateVoucherRequest extends FormRequest
             ]);
         }
 
-        // إذا كان نوع الحساب المساعد خزينة، نقوم بدمج معرف حسابه التجميعي الرئيسي (1101) آلياً
-        if ($this->input('sub_ledger_type') === 'treasury') {
+        // إذا كان نوع الحساب المساعد خزينة، نقوم بدمج معرف حسابه التجميعي الرئيسي آلياً
+        if ($subLedgerType === \App\Models\Treasury::class) {
             $account = Account::where('code', Account::CODE_TREASURY)->first();
 
             $this->merge([
@@ -51,7 +73,7 @@ class UpdateVoucherRequest extends FormRequest
     }
 
     /**
-     * قواعد التحقق عند تعديل السند (الحفاظ على نفس صرامة القيود المالية المشروطة)
+     * قواعد التحقق الصارمة لتعديل سندات الصرف والقبض
      */
     public function rules(): array
     {
@@ -59,21 +81,32 @@ class UpdateVoucherRequest extends FormRequest
             'voucher_type'    => ['required', Rule::in(['payment', 'receipt'])],
             'account_id'      => ['required', 'exists:accounts,id'],
 
-            // [تعديل جوهري]: مزامنة الكيانات المسموحة لتشمل 'bank', 'treasury', 'designer' أثناء التحديث
-            'sub_ledger_type' => ['required', 'string', Rule::in(['supplier', 'customer', 'expense', 'designer', 'bank', 'treasury', User::class])],
+            // التحقق من أن القيمة الممررة بعد الترجمة هي كلاس صريح ومعتمد للحسابات المساعدة
+            'sub_ledger_type' => [
+                'required',
+                'string',
+                Rule::in([
+                    \App\Models\Customer::class,
+                    \App\Models\Supplier::class,
+                    \App\Models\Treasury::class,
+                    \App\Models\Bank::class,
+                    \App\Models\Expense::class,
+                    \App\Models\User::class,
+                ])
+            ],
             'sub_ledger_id'   => ['required', 'integer'],
 
             'payment_method'  => ['required', Rule::in(['cash', 'bank'])],
             'fund_account_id' => ['required', 'exists:accounts,id'],
 
-            // [إصلاح معماري]: استخدام الدالة السهمية لحماية الخزنة أثناء التعديل العكسي للقيود
+            // التحقق الشرطي المحمي للخزنة التحليلية
             'treasury_id'     => [
                 'nullable',
                 Rule::requiredIf(fn () => $this->input('payment_method') === 'cash'),
                 'exists:treasuries,id'
             ],
 
-            // [إصلاح معماري]: استخدام الدالة السهمية لحماية البنك أثناء التعديل العكسي للقيود
+            // التحقق الشرطي المحمي للبنك التحليلي
             'bank_id'         => [
                 'nullable',
                 Rule::requiredIf(fn () => $this->input('payment_method') === 'bank'),
@@ -87,7 +120,7 @@ class UpdateVoucherRequest extends FormRequest
     }
 
     /**
-     * تخصيص أسماء الحقول للغة العربية
+     * تخصيص أسماء الحقول لتظهر الأخطاء واضحة للمستخدم باللغة العربية
      */
     public function attributes(): array
     {

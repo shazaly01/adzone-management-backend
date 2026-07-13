@@ -23,7 +23,10 @@ class JournalEntryLineResource extends JsonResource
             'debit'            => (float) $this->debit,
             'credit'           => (float) $this->credit,
             'line_notes'       => $this->line_notes,
-            'sub_ledger_type'  => $this->sub_ledger_type,
+
+            // [تعديل جوهري]: تنظيف اسم الكلاس وإرجاع الاسم الصغير (مثل customer) للواجهة لضمان سلامة الشروط والأيقونات
+            'sub_ledger_type'  => $this->sub_ledger_type ? strtolower(class_basename($this->sub_ledger_type)) : null,
+
             'sub_ledger_id'    => $this->sub_ledger_id,
             'sub_ledger_name'  => $this->whenLoaded('subLedger', function() {
                 return $this->subLedger ? $this->subLedger->name : null;

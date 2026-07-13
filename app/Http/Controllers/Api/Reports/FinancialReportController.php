@@ -103,9 +103,9 @@ class FinancialReportController extends Controller
         ]);
     }
 
- /**
+/**
      * 2. كشف حساب الكيانات المساعدة (Sub-Ledger Statement)
-     * نسخة معمارية مطورة تدعم تحديد الهوية المستندية العكسية (Source ID/Type) للتأصيل المستندي في الواجهة
+     * نسخة معمارية مطورة ونظيفة تعتمد بالكامل على الكلاسات الكاملة وبأعلى كفاءة استعلامية
      */
     public function subLedgerStatement(Request $request): JsonResponse
     {
@@ -119,29 +119,34 @@ class FinancialReportController extends Controller
         $fromDate = $request->from_date ? Carbon::parse($request->from_date)->startOfDay() : null;
         $toDate = $request->to_date ? Carbon::parse($request->to_date)->endOfDay() : null;
 
-        // هندسة مصفوفة مسميات متعددة لضمان جلب الحركة سواء سُجلت باسم الفئة الكامل أو الكود المختصر
-        $morphTypes = [$type];
-        if (str_contains(strtolower($type), 'supplier')) {
-            $morphTypes = ['App\Models\Supplier', 'supplier'];
-        } elseif (str_contains(strtolower($type), 'customer') || str_contains(strtolower($type), 'client')) {
-            $morphTypes = ['App\Models\Customer', 'customer'];
-        } elseif (str_contains(strtolower($type), 'bank')) {
-            $morphTypes = ['App\Models\Bank', 'bank'];
-        } elseif (str_contains(strtolower($type), 'treasury')) {
-            $morphTypes = ['App\Models\Treasury', 'treasury'];
-        } elseif (str_contains(strtolower($type), 'designer') || str_contains(strtolower($type), 'user')) {
-            $morphTypes = ['App\Models\User', 'designer', 'user'];
+        // خريطة المطابقة لترجمة المعرف القادم من الواجهة إلى كلاس صريح ونظيف فوراً
+        $typeMap = [
+            'customer' => \App\Models\Customer::class,
+            'client'   => \App\Models\Customer::class,
+            'supplier' => \App\Models\Supplier::class,
+            'treasury' => \App\Models\Treasury::class,
+            'bank'     => \App\Models\Bank::class,
+            'expense'  => \App\Models\Expense::class,
+            'user'     => \App\Models\User::class,
+            'designer' => \App\Models\User::class,
+            'store'    => \App\Models\Store::class,
+        ];
+
+        $normalizedType = strtolower(trim($type));
+        if (array_key_exists($normalizedType, $typeMap)) {
+            $type = $typeMap[$normalizedType];
         }
 
-        // تحديد طبيعة التعامل لمحاكاة الرصيد الجاري بشكل محاسبي صحيح
-        $isDebitNature = str_contains(strtolower($type), 'customer') ||
-                         str_contains(strtolower($type), 'client') ||
-                         str_contains(strtolower($type), 'bank') ||
-                         str_contains(strtolower($type), 'treasury');
+        // فحص طبيعة التعامل المحاسبي الحاسم بناءً على الكلاس الصريح
+        $isDebitNature = in_array($type, [
+            \App\Models\Customer::class,
+            \App\Models\Bank::class,
+            \App\Models\Treasury::class,
+        ]);
 
-        // أ: احتساب الرصيد الافتتاحي مع دعم مصفوفة المسميات الموحدة
+        // أ: احتساب الرصيد الافتتاحي ما قبل الفترة المحددة باستخدام الكلاس الصريح مباشرة
         if ($fromDate) {
-            $openingQuery = JournalEntryLine::whereIn('sub_ledger_type', $morphTypes)
+            $openingQuery = JournalEntryLine::where('sub_ledger_type', $type)
                 ->where('sub_ledger_id', $id)
                 ->whereHas('journalEntry', function ($q) use ($fromDate) {
                     $q->where('entry_date', '<', $fromDate);
@@ -154,7 +159,7 @@ class FinancialReportController extends Controller
             $openingBalance = 0.00;
         }
 
-        // ب: جلب الحركات التفصيلية للكيان مع شحن العلاقات العكسية للمستندات ذرياً في الذاكرة لمنع الـ N+1 Queries كلياً
+        // ب: جلب الحركات التفصيلية للكيان مع شحن العلاقات العكسية للمستندات في الذاكرة
         $linesQuery = JournalEntryLine::with([
             'journalEntry.lines.account',
             'account',
@@ -162,7 +167,7 @@ class FinancialReportController extends Controller
             'journalEntry.purchase',
             'journalEntry.voucher'
         ])
-        ->whereIn('sub_ledger_type', $morphTypes)
+        ->where('sub_ledger_type', $type)
         ->where('sub_ledger_id', $id)
         ->whereHas('journalEntry', function ($q) use ($fromDate, $toDate) {
             if ($fromDate) $q->where('entry_date', '>=', $fromDate);
@@ -188,7 +193,7 @@ class FinancialReportController extends Controller
                 $runningBalance += ($credit - $debit);
             }
 
-            // 1. هندسة استخراج الحساب المقابل الرئيسي بناءً على الفرز التشغيلي والوزن المالي للأعلى قيمة
+            // 1. استخراج الحساب المقابل الرئيسي بناءً على الفرز التشغيلي والوزن المالي
             $counterpartAccountName = null;
             if ($line->journalEntry && $line->journalEntry->lines) {
                 $isCurrentLineDebit = $debit > 0;
@@ -226,7 +231,7 @@ class FinancialReportController extends Controller
                 $counterpartAccountName = $line->account->name ?? null;
             }
 
-            // 2. طبقة التطهير الدلالي الحصينة لقنص الكلمات المفتاحية واختصارها فوراً لواجهات الكاشير
+            // 2. طبقة التطهير الدلالي الحصينة واختصار الكلمات للواجهة
             if ($counterpartAccountName) {
                 $counterpartAccountName = trim($counterpartAccountName);
 
@@ -253,7 +258,7 @@ class FinancialReportController extends Controller
                 }
             }
 
-            // 3. هندسة كشف التأصيل المستندي العكسي: فحص أي العلاقات مشحونة في الذاكرة وتحديد هوية المستند الأب
+            // 3. هندسة كشف التأصيل المستندي العكسي
             $sourceType = null;
             $sourceId = null;
 
@@ -265,7 +270,6 @@ class FinancialReportController extends Controller
                     $sourceType = 'purchase';
                     $sourceId = $line->journalEntry->purchase->id;
                 } elseif ($line->journalEntry->voucher) {
-                    // استخراج نوع السند ديناميكياً بناءً على حقل الحالة التشغيلية الفعلي (payment أو receipt)
                     $sourceType = $line->journalEntry->voucher->voucher_type;
                     $sourceId = $line->journalEntry->voucher->id;
                 }
@@ -288,7 +292,8 @@ class FinancialReportController extends Controller
         return response()->json([
             'success' => true,
             'meta'    => [
-                'sub_ledger_type' => $type,
+                // إرجاع الاسم الصغير للفرونت إند (مثل customer) ليتناسب مع بقية الموارد والـ Resources
+                'sub_ledger_type' => strtolower(class_basename($type)),
                 'sub_ledger_id'   => (int) $id,
                 'opening_balance' => round($openingBalance, 2),
                 'closing_balance' => round($runningBalance, 2)

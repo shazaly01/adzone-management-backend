@@ -18,12 +18,33 @@ class StoreVoucherRequest extends FormRequest
     }
 
     /**
-     * [حقن معماري ذكي]: اعتراض البيانات قبل الفحص لحل مشكلة الحسابات المساعدة تلقائياً
+     * اعتراض البيانات قبل الفحص لحل مشكلة الحسابات المساعدة وتحويلها إلى كلاسات كاملة
      */
     protected function prepareForValidation()
     {
-        // إذا كان نوع الحساب المساعد مصمم، نقوم بدمج معرف حسابه التجميعي (2103) آلياً
-        if (in_array($this->input('sub_ledger_type'), ['designer', 'user', User::class])) {
+        $typeMap = [
+            'customer' => \App\Models\Customer::class,
+            'client'   => \App\Models\Customer::class,
+            'supplier' => \App\Models\Supplier::class,
+            'treasury' => \App\Models\Treasury::class,
+            'bank'     => \App\Models\Bank::class,
+            'expense'  => \App\Models\Expense::class,
+            'user'     => \App\Models\User::class,
+            'designer' => \App\Models\User::class,
+        ];
+
+        $subLedgerType = $this->input('sub_ledger_type');
+
+        // ترجمة النص المختصر إلى الاسم الكامل للكلاس إذا وجد في المصفوفة
+        if (array_key_exists($subLedgerType, $typeMap)) {
+            $subLedgerType = $typeMap[$subLedgerType];
+            $this->merge([
+                'sub_ledger_type' => $subLedgerType,
+            ]);
+        }
+
+        // إذا كان نوع الحساب المساعد مصمم أو مستخدم، نقوم بدمج معرف حسابه التجميعي (2103) آلياً
+        if ($subLedgerType === \App\Models\User::class) {
             $account = Account::where('code', Account::CODE_DESIGNERS_LEDGER)->first();
 
             $this->merge([
@@ -32,7 +53,7 @@ class StoreVoucherRequest extends FormRequest
         }
 
         // إذا كان نوع الحساب المساعد بنك، نقوم بدمج معرف حسابه التجميعي الرئيسي (1102) آلياً
-        if ($this->input('sub_ledger_type') === 'bank') {
+        if ($subLedgerType === \App\Models\Bank::class) {
             $account = Account::where('code', Account::CODE_BANKS)->first();
 
             $this->merge([
@@ -41,7 +62,7 @@ class StoreVoucherRequest extends FormRequest
         }
 
         // إذا كان نوع الحساب المساعد خزينة، نقوم بدمج معرف حسابه التجميعي الرئيسي (1101) آلياً
-        if ($this->input('sub_ledger_type') === 'treasury') {
+        if ($subLedgerType === \App\Models\Treasury::class) {
             $account = Account::where('code', Account::CODE_TREASURY)->first();
 
             $this->merge([
@@ -59,12 +80,23 @@ class StoreVoucherRequest extends FormRequest
             'voucher_type'    => ['required', Rule::in(['payment', 'receipt'])],
             'account_id'      => ['required', 'exists:accounts,id'],
 
-            // [تعديل جوهري]: السماح بقبول الكيانات 'bank' و 'treasury' كحسابات مساعدة معتمدة ومطابقة للبقية
-            'sub_ledger_type' => ['required', 'string', Rule::in(['supplier', 'customer', 'expense', 'designer', 'bank', 'treasury', User::class])],
+            // التحقق من أن القيمة الممررة بعد الترجمة هي كلاس صريح ومعتمد للحسابات المساعدة
+            'sub_ledger_type' => [
+                'required',
+                'string',
+                Rule::in([
+                    \App\Models\Customer::class,
+                    \App\Models\Supplier::class,
+                    \App\Models\Treasury::class,
+                    \App\Models\Bank::class,
+                    \App\Models\Expense::class,
+                    \App\Models\User::class,
+                ])
+            ],
             'sub_ledger_id'   => ['required', 'integer'],
 
             'payment_method'  => ['required', Rule::in(['cash', 'bank'])],
-            'fund_account_id' => ['required', 'exists:accounts,id'], // الحساب التجميعي الرئيسي للخزائن أو البنوك النقدية
+            'fund_account_id' => ['required', 'exists:accounts,id'],
 
             // التحقق الشرطي المحمي للخزنة التحليلية
             'treasury_id'     => [

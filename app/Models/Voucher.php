@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
-use Illuminate\Database\Eloquent\Casts\Attribute;
+
 class Voucher extends Model
 {
     use HasFactory, SoftDeletes;
@@ -21,8 +21,8 @@ class Voucher extends Model
         'sub_ledger_id',
         'payment_method',
         'fund_account_id',
-        'treasury_id',      // [إصلاح معماري]: لربط السند بالخزنة التحليلية كحساب مساعد
-        'bank_id',          // [إصلاح معماري]: لربط السند بالبنك التحليلي كحساب مساعد
+        'treasury_id',
+        'bank_id',
         'amount',
         'voucher_date',
         'notes',
@@ -44,7 +44,6 @@ class Voucher extends Model
         parent::boot();
 
         static::creating(function ($voucher) {
-            // التعديل: استخدام withTrashed() لضمان احتساب السندات المحذوفة ناعماً وتجنب تكرار الأرقام
             $lastSequence = self::withTrashed()
                 ->where('voucher_type', $voucher->voucher_type)
                 ->max('voucher_sequence');
@@ -52,33 +51,9 @@ class Voucher extends Model
             $nextSequence = $lastSequence ? $lastSequence + 1 : 1;
             $voucher->voucher_sequence = $nextSequence;
 
-            // تحديد البادئة: PAY- لسندات الصرف، REC- لسندات القبض
             $prefix = $voucher->voucher_type === 'payment' ? 'PAY-' : 'REC-';
             $voucher->voucher_number = $prefix . str_pad($nextSequence, 4, '0', STR_PAD_LEFT);
         });
-    }
-
-
- /**
-     * [ترقية معمارية]: مصفاة مزدوجة تضمن تحويل النص القصير إلى كلاس كامل
-     * عند الحفظ (set) لراحة قاعدة البيانات، وعند القراءة (get) لحماية البيانات التاريخية.
-     */
-    protected function subLedgerType(): Attribute
-    {
-        $transformer = fn ($value) => match (strtolower(trim($value ?? ''))) {
-            'customer', 'client' => \App\Models\Customer::class,
-            'supplier'           => \App\Models\Supplier::class,
-            'treasury'           => \App\Models\Treasury::class,
-            'bank'               => \App\Models\Bank::class,
-            'expense'            => \App\Models\Expense::class,
-            'user', 'designer'   => \App\Models\User::class,
-            default              => $value,
-        };
-
-        return Attribute::make(
-            get: $transformer,
-            set: $transformer
-        );
     }
 
     /**

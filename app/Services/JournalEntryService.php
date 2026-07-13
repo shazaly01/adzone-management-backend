@@ -6,7 +6,6 @@ use App\Models\JournalEntry;
 use App\Models\Account;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Database\Eloquent\Relations\Relation;
 use Carbon\Carbon;
 use Exception;
 
@@ -66,7 +65,6 @@ class JournalEntryService
      */
     public function updateEntry(JournalEntry $journalEntry, array $data): JournalEntry
     {
-        // مطابقة النص الحرفي للتست لضمان نجاح الفحص والتوافق الهيكلي
         if ($journalEntry->type !== 'opening_balance' && !Carbon::parse($journalEntry->entry_date)->isSameDay(Carbon::now())) {
             throw new Exception('لا يمكن تعديل القيود أو السندات المالية العائدة لأيام سابقة مباشرة. يرجى إلغاؤها بقيد عكسي.');
         }
@@ -80,7 +78,6 @@ class JournalEntryService
             foreach ($journalEntry->lines as $oldLine) {
                 $this->calculateNetEffect($oldLine->account_id, -$oldLine->debit, -$oldLine->credit, $accountChanges, $allAccounts);
 
-                // تصحيح الخطأ المطبعي: تمرير sub_ledger_id بدلاً من الحقل الوهمي oldLine
                 if (!empty($oldLine->sub_ledger_type) && !empty($oldLine->sub_ledger_id)) {
                     $this->calculateSubLedgerEffect($oldLine->sub_ledger_type, $oldLine->sub_ledger_id, -$oldLine->debit, -$oldLine->credit, $subLedgerChanges);
                 }
@@ -164,7 +161,7 @@ class JournalEntryService
     }
 
     /**
-     * حساب الأثر المالي وتصعيده شجرياً بدقة متناهية وبدون ترقيع (تغطية الحسابات العكسية Contra-Accounts)
+     * حساب الأثر المالي وتصعيده شجرياً بدقة متناهية (تغطية الحسابات العكسية Contra-Accounts)
      */
     private function calculateNetEffect(int $accountId, float $debit, float $credit, array &$changes, \Illuminate\Support\Collection $allAccounts): void
     {
@@ -174,7 +171,6 @@ class JournalEntryService
             $account = $allAccounts->get($currentId);
             if (!$account) break;
 
-            // هندسة محاسبية موحدة: يتم احتساب أثر الحركة لكل عقدة صعوداً بناءً على طبيعة العقدة نفسها
             if ($account->nature === 'debit') {
                 $nodeEffect = $debit - $credit;
             } else {
@@ -186,7 +182,6 @@ class JournalEntryService
             }
             $changes[$currentId] += $nodeEffect;
 
-            // الانتقال للأب الأعلى في الشجرة
             $currentId = $account->parent_id;
         }
     }
@@ -236,48 +231,34 @@ class JournalEntryService
         }
     }
 
-  /**
- * تحديث أرصدة الجداول المساعدة (نسخة معمارية نقية معزولة بدون آثار جانبية)
- */
-private function applySubLedgerChanges(array $subChanges, string $entryType): void
-{
-    ksort($subChanges);
+    /**
+     * تحديث أرصدة الجداول المساعدة (نسخة معمارية نقية معزولة تعتمد على الـ FQCN الموثوق مباشرة)
+     */
+    private function applySubLedgerChanges(array $subChanges, string $entryType): void
+    {
+        ksort($subChanges);
 
-    foreach ($subChanges as $change) {
-        if (round($change['effect'], 4) == 0) {
-            continue;
-        }
+        foreach ($subChanges as $change) {
+            if (round($change['effect'], 4) == 0) {
+                continue;
+            }
 
-        // 1. القراءة الطبيعية للموديل من لارافيل
-        $modelClass = \Illuminate\Database\Eloquent\Relations\Relation::getMorphedModel($change['type']) ?? $change['type'];
+            // الكลาส يأتي صريحاً ومطابقاً بنسبة 100% من قاعدة البيانات وبوابة التحقق بدون حاجة لـ match يدوي
+            $modelClass = $change['type'];
 
-        // 2. الحل الهندسي المحلي: إذا كان الاسم مختصراً ولم يعثر عليه لارافيل، نترجمه محلياً هنا فقط
-        if (!class_exists($modelClass)) {
-            $modelClass = match (strtolower($change['type'])) {
-                'customer', 'client' => \App\Models\Customer::class,
-                'supplier'           => \App\Models\Supplier::class,
-                'treasury'           => \App\Models\Treasury::class,
-                'bank'               => \App\Models\Bank::class,
-                'expense'            => \App\Models\Expense::class,
-                'user', 'designer'   => \App\Models\User::class,
-                default              => $modelClass
-            };
-        }
+            if (class_exists($modelClass)) {
+                $subLedgerInstance = $modelClass::lockForUpdate()->find($change['id']);
 
-        // 3. التنفيذ الآمن بعد تأكيد وجود الكلاس
-        if (class_exists($modelClass)) {
-            $subLedgerInstance = $modelClass::lockForUpdate()->find($change['id']);
+                if ($subLedgerInstance) {
+                    $subLedgerInstance->current_balance += $change['effect'];
 
-            if ($subLedgerInstance) {
-                $subLedgerInstance->current_balance += $change['effect'];
+                    if ($entryType === 'opening_balance') {
+                        $subLedgerInstance->opening_balance += $change['effect'];
+                    }
 
-                if ($entryType === 'opening_balance') {
-                    $subLedgerInstance->opening_balance += $change['effect'];
+                    $subLedgerInstance->save();
                 }
-
-                $subLedgerInstance->save();
             }
         }
     }
-}
 }
