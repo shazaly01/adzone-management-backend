@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
-
+use Illuminate\Database\Eloquent\Casts\Attribute;
 class Voucher extends Model
 {
     use HasFactory, SoftDeletes;
@@ -59,24 +59,26 @@ class Voucher extends Model
     }
 
 
-    /**
-     * مسترجع ذكي لترجمة الكلمات المختصرة للحسابات المساعدة إلى كلاسات صلبة عند القراءة الجارية
+ /**
+     * [ترقية معمارية]: مصفاة مزدوجة تضمن تحويل النص القصير إلى كلاس كامل
+     * عند الحفظ (set) لراحة قاعدة البيانات، وعند القراءة (get) لحماية البيانات التاريخية.
      */
-    public function getSubLedgerTypeAttribute($value)
+    protected function subLedgerType(): Attribute
     {
-        if (empty($value)) {
-            return $value;
-        }
-
-        return match (strtolower(trim($value))) {
+        $transformer = fn ($value) => match (strtolower(trim($value ?? ''))) {
             'customer', 'client' => \App\Models\Customer::class,
             'supplier'           => \App\Models\Supplier::class,
             'treasury'           => \App\Models\Treasury::class,
             'bank'               => \App\Models\Bank::class,
             'expense'            => \App\Models\Expense::class,
             'user', 'designer'   => \App\Models\User::class,
-            default              => $value
+            default              => $value,
         };
+
+        return Attribute::make(
+            get: $transformer,
+            set: $transformer
+        );
     }
 
     /**

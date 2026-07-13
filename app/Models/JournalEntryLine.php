@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 
 class JournalEntryLine extends Model
 {
@@ -26,6 +27,29 @@ class JournalEntryLine extends Model
         'debit'  => 'decimal:2',
         'credit' => 'decimal:2',
     ];
+
+
+/**
+     * [تأمين معاملي مطور]: مصفاة مزدوجة تضمن تحويل النص القصير إلى كلاس كامل
+     * عند الحفظ (set) لراحة قاعدة البيانات، وعند القراءة (get) لحماية البيانات التاريخية.
+     */
+    protected function subLedgerType(): Attribute
+    {
+        $transformer = fn ($value) => match (strtolower(trim($value ?? ''))) {
+            'customer', 'client' => \App\Models\Customer::class,
+            'supplier'           => \App\Models\Supplier::class,
+            'treasury'           => \App\Models\Treasury::class,
+            'bank'               => \App\Models\Bank::class,
+            'expense'            => \App\Models\Expense::class,
+            'user', 'designer'   => \App\Models\User::class,
+            default              => $value, // إذا كان كلاس كامل يمر كما هو
+        };
+
+        return Attribute::make(
+            get: $transformer,
+            set: $transformer  // [إصلاح حرج]: لاعتراض الكلمة وتحويلها لكلاس كامل قبل الحفظ في الجدول
+        );
+    }
 
     /**
      * رأس القيد أو السند التابع له هذا السطر تفصيلياً

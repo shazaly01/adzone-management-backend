@@ -5,6 +5,7 @@ namespace App\Http\Requests\Sale;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 use App\Models\Item;
+use App\Models\Sale;
 
 class UpdateSaleRequest extends FormRequest
 {
@@ -79,7 +80,7 @@ class UpdateSaleRequest extends FormRequest
     }
 
     /**
-     * التحقق المتقدم بعد القواعد الأساسية لفرض الطول والعرض للأصناف المترية عند التعديل
+     * التحقق المتقدم بعد القواعد الأساسية لفرض الطول والعرض للأصناف المترية ومنع التلاعب بالمقاسات أثناء التحديث
      */
     public function withValidator($validator): void
     {
@@ -89,16 +90,13 @@ class UpdateSaleRequest extends FormRequest
                 return;
             }
 
-            // جلب كافة معرفات الأصناف الفريدة لتجنب الاستعلام المتكرر داخل الحلقة N+1
+            // 1. فحص وفرض الطول والعرض للأصناف المترية ذات الأبعاد
             $itemIds = collect($items)->pluck('item_id')->filter()->unique()->toArray();
-
-            // تحديد الأصناف المعرفة كأصناف مترية ذات أبعاد في قاعدة البيانات
             $dimensionalItemIds = Item::whereIn('id', $itemIds)
                 ->where('is_dimensional', true)
                 ->pluck('id')
                 ->toArray();
 
-            // فحص السطور وإطلاق الأخطاء المخصصة بدقة لمنع التلاعب بالمقاسات أثناء التحديث
             foreach ($items as $index => $item) {
                 $itemId = $item['item_id'] ?? null;
 
@@ -112,6 +110,104 @@ class UpdateSaleRequest extends FormRequest
 
                     if ($width === null || !is_numeric($width) || $width <= 0) {
                         $validator->errors()->add("items.{$index}.width", "حقل العرض مطلوب ويجب أن يكون أكبر من صفر لأن هذا الصنف متري الأبعاد.");
+                    }
+                }
+            }
+
+            // 2. الرقابة الصارمة أثناء التحديث: التحقق من الكميات والمقاسات مع استثناء المستند الحالي
+            $parentId = $this->input('parent_id');
+            $invoiceType = $this->input('invoice_type');
+            $currentSale = $this->route('sale'); // جلب المستند الحالي من المسار (Route)
+
+            if ($invoiceType === 'return' && $parentId && $currentSale) {
+                $parentSale = Sale::with('items.item')->find($parentId);
+
+                if ($parentSale) {
+                    // التعديل الجوهري: جلب المرتجعات السابقة مع استبعاد المرتجع الحالي تماماً من الحساب
+                    $previousReturns = Sale::where('parent_id', $parentId)
+                        ->where('invoice_type', 'return')
+                        ->where('id', '!=', $currentSale->id) // استثناء المستند الحالي لمنع اصطدام الحسابات
+                        ->with('items')
+                        ->get();
+
+                    // تجميع إجمالي الكميات والمساحات المترية الأصلية المتاحة بالفاتورة الأم
+                    $originalTotals = [];
+                    foreach ($parentSale->items as $pItem) {
+                        $key = $pItem->item_id . '-' . $pItem->item_unit_id;
+                        if (!isset($originalTotals[$key])) {
+                            $originalTotals[$key] = [
+                                'quantity' => 0.00,
+                                'total_dimensional_qty' => 0.00,
+                                'is_dimensional' => (bool)($pItem->item->is_dimensional ?? false)
+                            ];
+                        }
+                        $originalTotals[$key]['quantity'] += (float)$pItem->quantity;
+
+                        $pCalcQty = (bool)($pItem->item->is_dimensional ?? false)
+                            ? ((float)$pItem->length * (float)$pItem->width * (float)$pItem->quantity)
+                            : (float)$pItem->quantity;
+
+                        $originalTotals[$key]['total_dimensional_qty'] += $pCalcQty;
+                    }
+
+                    // تجميع إجمالي ما تم إرجاعه مسبقاً في المستندات الأخرى فقط
+                    $returnedTotals = [];
+                    foreach ($previousReturns as $prevReturn) {
+                        foreach ($prevReturn->items as $rItem) {
+                            $key = $rItem->item_id . '-' . $rItem->item_unit_id;
+                            if (!isset($returnedTotals[$key])) {
+                                $returnedTotals[$key] = [
+                                    'quantity' => 0.00,
+                                    'total_dimensional_qty' => 0.00
+                                ];
+                            }
+                            $returnedTotals[$key]['quantity'] += (float)$rItem->quantity;
+
+                            $isDim = $originalTotals[$key]['is_dimensional'] ?? false;
+                            $rCalcQty = $isDim
+                                ? ((float)$rItem->length * (float)$rItem->width * (float)$rItem->quantity)
+                                : (float)$rItem->quantity;
+
+                            $returnedTotals[$key]['total_dimensional_qty'] += $rCalcQty;
+                        }
+                    }
+
+                    // مطابقة عناصر طلب التعديل الحالي ومقارنتها بالمتبقي الفعلي المتاح
+                    foreach ($items as $index => $item) {
+                        $itemId = $item['item_id'] ?? null;
+                        $itemUnitId = $item['item_unit_id'] ?? null;
+                        $key = $itemId . '-' . $itemUnitId;
+
+                        if (!isset($originalTotals[$key])) {
+                            $validator->errors()->add("items.{$index}.item_id", "هذا الصنف غير موجود في سطور فاتورة المبيعات الأصلية المرجعية.");
+                            continue;
+                        }
+
+                        $origQty = $originalTotals[$key]['quantity'];
+                        $origDimQty = $originalTotals[$key]['total_dimensional_qty'];
+
+                        $prevQty = $returnedTotals[$key]['quantity'] ?? 0.00;
+                        $prevDimQty = $returnedTotals[$key]['total_dimensional_qty'] ?? 0.00;
+
+                        $currentQty = (float)($item['quantity'] ?? 0.00);
+                        $isDim = $originalTotals[$key]['is_dimensional'];
+
+                        if ($isDim) {
+                            $currentLength = (float)($item['length'] ?? 0.00);
+                            $currentWidth = (float)($item['width'] ?? 0.00);
+                            $currentDimQty = $currentLength * $currentWidth * $currentQty;
+
+                            $availableDimQty = $origDimQty - $prevDimQty;
+
+                            if ($currentDimQty > $availableDimQty) {
+                                $validator->errors()->add("items.{$index}.quantity", "المساحة المترية المحدثة الحالية ({$currentDimQty} م²) تتجاوز المساحة المتبقية القابلة للإرجاع في الفاتورة الأصلية ({$availableDimQty} م²).");
+                            }
+                        } else {
+                            $availableQty = $origQty - $prevQty;
+                            if ($currentQty > $availableQty) {
+                                $validator->errors()->add("items.{$index}.quantity", "الكمية المحدثة الحالية ({$currentQty}) تتجاوز الكمية المتبقية القابلة للإرجاع في الفاتورة الأصلية ({$availableQty}).");
+                            }
+                        }
                     }
                 }
             }
@@ -143,7 +239,7 @@ class UpdateSaleRequest extends FormRequest
             'designer_meter_price'     => 'سعر المتر للمصمم',
             'design_commission'        => 'إجمالي عمولة التصميم',
             'sale_type'                => 'نوع حركة البيع (داخلي / خارجي)',
-'customer_name_text'       => 'اسم العميل الخارجي (النصي)',
+            'customer_name_text'       => 'اسم العميل الخارجي (النصي)',
             'items.*.is_designed'      => 'خاضع للتصميم في السطر',
             'items.*.length'           => 'الطول للسطر',
             'items.*.width'            => 'العرض للسطر',
