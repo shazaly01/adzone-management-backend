@@ -3,119 +3,186 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\OnlineBackupService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Artisan;
-use Illuminate\Support\Facades\Storage;
-use Symfony\Component\HttpFoundation\StreamedResponse;
+use Illuminate\Http\JsonResponse;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Exception;
 
 class BackupController extends Controller
 {
+    protected OnlineBackupService $backupService;
+
     /**
-     * عرض قائمة النسخ الاحتياطية الموجودة.
+     * حقن خدمة النسخ الاحتياطي في الـ Controller
      */
-    public function index()
+    public function __construct(OnlineBackupService $backupService)
     {
-        $backupName = config('backup.backup.name');
-
-        // تعديل 1: استخدام disk('local') دائماً لتوحيد التعامل
-        $disk = Storage::disk('local');
-
-        if (!$disk->exists($backupName)) {
-            // محاولة إنشاء المجلد إذا لم يكن موجوداً لتجنب الأخطاء
-            $disk->makeDirectory($backupName);
-            return response()->json(['data' => []]);
-        }
-
-        $files = $disk->files($backupName);
-        $backups = [];
-
-        foreach ($files as $file) {
-            if (substr($file, -4) == '.zip') {
-                $backups[] = [
-                    'path' => $file,
-                    'name' => basename($file),
-                    'size' => $this->formatSize($disk->size($file)),
-                    'date' => date('Y-m-d H:i:s', $disk->lastModified($file)),
-                ];
-            }
-        }
-
-        $backups = array_reverse($backups);
-
-        return response()->json(['data' => $backups]);
+        $this->backupService = $backupService;
     }
 
     /**
-     * إنشاء نسخة احتياطية جديدة.
+     * عرض قائمة النسخ الاحتياطية المتوفرة أونلاين على السيرفر
      */
-    public function store()
+    public function index(): JsonResponse
     {
-        // تعديل 2 (هام جداً): زيادة وقت التنفيذ
-        // عملية الباك بي تأخذ وقتاً (دقيقة أو أكثر) والريكوست العادي يموت بعد 30 ثانية
-        // هذا السطر يمنع ظهور خطأ Timeout
-        set_time_limit(0);
-        ini_set('memory_limit', '-1'); // لضمان عدم توقف السكربت بسبب الذاكرة
-
         try {
-            Artisan::call('backup:run');
-            $output = Artisan::output();
+            $backups = $this->backupService->getBackupsList();
 
             return response()->json([
-                'message' => 'تم إنشاء النسخة الاحتياطية بنجاح.',
-                'output' => $output
+                'success' => true,
+                'data' => $backups
             ]);
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             return response()->json([
-                'message' => 'فشل إنشاء النسخة الاحتياطية.',
+                'success' => false,
+                'message' => 'تعذر جلب قائمة النسخ الاحتياطية.',
                 'error' => $e->getMessage()
             ], 500);
         }
     }
 
     /**
-     * تنزيل ملف النسخة الاحتياطية.
+     * إنشاء نسخة احتياطية جديدة لقاعدة البيانات
      */
-    public function download(Request $request)
+    public function store(): JsonResponse
     {
-        // تعديل 3 (أمني): استخدام basename لمنع اختراق المسارات
-        // هذا يمنع أي شخص من إرسال اسم ملف مثل "../../.env" لسرقة ملفات النظام
-        $fileName = basename($request->query('file_name'));
+        // زيادة حد وقت التنفيذ والذاكرة لتفادي انهيار الريكوست أثناء الضغط
+        set_time_limit(0);
+        ini_set('memory_limit', '-1');
 
-        $backupName = config('backup.backup.name');
-        $path = $backupName . '/' . $fileName;
+        try {
+            $backupInfo = $this->backupService->generateBackup();
 
-        if (!Storage::disk('local')->exists($path)) {
-            return response()->json(['message' => 'الملف غير موجود.'], 404);
+            return response()->json([
+                'success' => true,
+                'message' => 'تم إنشاء النسخة الاحتياطية أونلاين بنجاح تام وتم تدوير النسخ الزائدة.',
+                'data' => $backupInfo
+            ]);
+        } catch (Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'فشل إنشاء النسخة الاحتياطية أونلاين.',
+                'error' => $e->getMessage()
+            ], 500);
         }
-
-        return Storage::disk('local')->download($path);
     }
 
     /**
-     * حذف نسخة احتياطية.
+     * طلب توليد رابط تحميل آمن وموقع زمنياً لسحب النسخة الاحتياطية خارجياً لجهاز العميل
      */
-    public function destroy(Request $request)
+    public function getDownloadUrl(Request $request): JsonResponse
     {
-        // نفس التعديل الأمني هنا أيضاً
-        $fileName = basename($request->query('file_name'));
+        $request->validate([
+            'file_name' => 'required|string'
+        ]);
 
-        $backupName = config('backup.backup.name');
-        $path = $backupName . '/' . $fileName;
+        $fileName = basename($request->input('file_name'));
 
-        if (Storage::disk('local')->exists($path)) {
-            Storage::disk('local')->delete($path);
-            return response()->json(['message' => 'تم حذف النسخة بنجاح.']);
+        try {
+            $downloadUrl = $this->backupService->generateDownloadUrl($fileName);
+
+            return response()->json([
+                'success' => true,
+                'download_url' => $downloadUrl
+            ]);
+        } catch (Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'تعذر توليد رابط التحميل الآمن.',
+                'error' => $e->getMessage()
+            ], 500);
         }
-
-        return response()->json(['message' => 'الملف غير موجود.'], 404);
     }
 
-    private function formatSize($bytes)
+    /**
+     * تنفيذ التحميل الفعلي للملف الموقّع برمجياً (يتم استدعاؤه بواسطة رابط الـ Signed URL)
+     */
+    public function download(Request $request): BinaryFileResponse|JsonResponse
     {
-        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        for ($i = 0; $bytes > 1024; $i++) {
-            $bytes /= 1024;
+        // 1. التحقق الحاسم من سلامة وصلاحية التوقيع الرقمي للرابط المولد
+        if (!$request->hasValidSignature()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'رابط التحميل غير صالح أو منتهي الصلاحية الأمنية (صلاحية الرابط دقيقتين فقط).'
+            ], 403);
         }
-        return round($bytes, 2) . ' ' . $units[$i];
+
+        $fileName = basename($request->query('file_name'));
+        $filePath = storage_path('app' . DIRECTORY_SEPARATOR . 'backups' . DIRECTORY_SEPARATOR . 'online' . DIRECTORY_SEPARATOR . $fileName);
+
+        if (!file_exists($filePath)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'الملف المطلوب غير موجود على السيرفر.'
+            ], 404);
+        }
+
+        return response()->download($filePath);
+    }
+
+    /**
+     * استعادة قاعدة البيانات من ملف نسخة احتياطية (.sql.gz) مع التراجع الآمن في حال الكوارث
+     */
+    public function restore(Request $request): JsonResponse
+    {
+        $request->validate([
+            'file_name' => 'required|string'
+        ]);
+
+        // زيادة حدود التنفيذ لضمان عدم انقطاع الاستعادة في منتصف العملية
+        set_time_limit(0);
+        ini_set('memory_limit', '-1');
+
+        $fileName = basename($request->input('file_name'));
+
+        try {
+            $result = $this->backupService->restoreBackup($fileName);
+
+            return response()->json([
+                'success' => true,
+                'message' => $result['message']
+            ]);
+        } catch (Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'فشلت عملية استعادة قاعدة البيانات.',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * حذف نسخة احتياطية بشكل نهائي من السيرفر
+     */
+    public function destroy(Request $request): JsonResponse
+    {
+        $request->validate([
+            'file_name' => 'required|string'
+        ]);
+
+        $fileName = basename($request->input('file_name'));
+
+        try {
+            $deleted = $this->backupService->deleteBackup($fileName);
+
+            if ($deleted) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'تم حذف ملف النسخة الاحتياطية بنجاح تام من السيرفر.'
+                ]);
+            }
+
+            return response()->json([
+                'success' => false,
+                'message' => 'الملف المطلوب غير موجود أو تعذر حذفه.'
+            ], 404);
+        } catch (Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'حدث خطأ أثناء محاولة حذف الملف.',
+                'error' => $e->getMessage()
+            ], 500);
+        }
     }
 }

@@ -49,10 +49,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/manager/dashboard/stats', [DashboardController::class, 'getStats']);
 
     // 2. إدارة النسخ الاحتياطي
+ // 2. إدارة النسخ الاحتياطي (نسخ، استعادة، وسحب آمن)
     Route::prefix('backups')->name('backups.')->group(function () {
         Route::get('/', [BackupController::class, 'index'])->middleware('can:backup.view');
         Route::post('/', [BackupController::class, 'store'])->middleware('can:backup.create');
-        Route::get('/download', [BackupController::class, 'download'])->middleware('can:backup.download');
+        Route::get('/download-url', [BackupController::class, 'getDownloadUrl'])->middleware('can:backup.download');
+        Route::get('/download', [BackupController::class, 'download'])->name('download'); // التحقق هنا ذاتي ومحمي بالتوقيع الرقمي المؤقت
+        Route::post('/restore', [BackupController::class, 'restore'])->middleware('can:backup.restore');
         Route::delete('/', [BackupController::class, 'destroy'])->middleware('can:backup.delete');
     });
 
