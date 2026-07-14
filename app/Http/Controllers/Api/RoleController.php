@@ -49,7 +49,7 @@ class RoleController extends Controller
         return new RoleResource($role->load('permissions'));
     }
 
- public function update(UpdateRoleRequest $request, Role $role)
+    public function update(UpdateRoleRequest $request, Role $role)
     {
         $validated = $request->validated();
 
@@ -91,11 +91,12 @@ class RoleController extends Controller
 
         return response()->noContent();
     }
+
     /**
      * Get all available permissions.
      * هذه الدالة لا يتم حمايتها بـ authorizeResource، لذا نضيف الصلاحية يدويًا
      */
-public function getAllPermissions()
+    public function getAllPermissions()
     {
         $this->authorize('viewAny', Role::class);
 
@@ -137,8 +138,10 @@ public function getAllPermissions()
             'financial'          => 'المالية',
             'inventory'          => 'المخزنية',
             'account_statement'  => 'كشف الحساب الرئيسي',
-            'sub_ledger'         => 'كشف الحساب المساعد', // <-- إضافة الترجمة البرمجية هنا
+            'sub_ledger'         => 'كشف الحساب المساعد',
             'trial_balance'      => 'ميزان المراجعة',
+            'download'           => 'تحميل',  // <--- تم تفعيلها لضمان بناء الصلاحية في الكتالوج
+            'restore'            => 'استعادة', // <--- تم تفعيلها لضمان ظهور زر الاستعادة في الكتالوج
         ];
 
         // 2. جلب كل الصلاحيات وتجميعها حسب المجموعة
