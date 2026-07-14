@@ -85,7 +85,7 @@ class PermissionSeeder extends Seeder
             'report.sub_ledger',        // [مستقلة وتفضيلية]: صلاحية كشف الحساب المساعد المفتوح للجميع
 
             // النسخ الاحتياطي والإعدادات العامة
-            'backup.view', 'backup.create', 'backup.delete', 'backup.download',
+            'backup.view', 'backup.create', 'backup.delete', 'backup.download', 'backup.restore',
             'setting.view', 'setting.update',
         ];
 
