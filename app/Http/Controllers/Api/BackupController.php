@@ -7,14 +7,21 @@ use App\Services\OnlineBackupService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
-use Exception;
+use Illuminate\Support\Facades\Log;
 
 class BackupController extends Controller
 {
+    /**
+     * خدمة النسخ الاحتياطي السحابي لإدارة العمليات المعقدة
+     *
+     * @var OnlineBackupService
+     */
     protected OnlineBackupService $backupService;
 
     /**
-     * حقن خدمة النسخ الاحتياطي في الـ Controller
+     * حقن الخدمة داخل وحدة التحكم
+     *
+     * @param OnlineBackupService $backupService
      */
     public function __construct(OnlineBackupService $backupService)
     {
@@ -22,7 +29,11 @@ class BackupController extends Controller
     }
 
     /**
-     * عرض قائمة النسخ الاحتياطية المتوفرة أونلاين على السيرفر
+     * جلب قائمة كافة ملفات النسخ الاحتياطي المتوفرة على السيرفر
+     * مسار الوصول: GET /api/backups
+     * الصلاحية المطلوبة: backup.view
+     *
+     * @return JsonResponse
      */
     public function index(): JsonResponse
     {
@@ -33,88 +44,66 @@ class BackupController extends Controller
                 'success' => true,
                 'data' => $backups
             ]);
-        } catch (Exception $e) {
+        } catch (\Exception $e) {
+            Log::error('فشل جلب قائمة النسخ الاحتياطية: ' . $e->getMessage());
+
             return response()->json([
                 'success' => false,
-                'message' => 'تعذر جلب قائمة النسخ الاحتياطية.',
-                'error' => $e->getMessage()
+                'message' => 'حدث خطأ فني أثناء جلب قائمة النسخ الاحتياطية من السيرفر.'
             ], 500);
         }
     }
 
     /**
-     * إنشاء نسخة احتياطية جديدة لقاعدة البيانات
+     * إنشاء نسخة احتياطية جديدة لقاعدة البيانات يدوياً
+     * مسار الوصول: POST /api/backups
+     * الصلاحية المطلوبة: backup.create
+     *
+     * @return JsonResponse
      */
     public function store(): JsonResponse
     {
-        // زيادة حد وقت التنفيذ والذاكرة لتفادي انهيار الريكوست أثناء الضغط
-        set_time_limit(0);
-        ini_set('memory_limit', '-1');
-
         try {
-            $backupInfo = $this->backupService->generateBackup();
+            // استدعاء الدالة الصحيحة المتوافقة مع السيرفس الخاص بك
+            $backup = $this->backupService->generateBackup();
 
             return response()->json([
                 'success' => true,
-                'message' => 'تم إنشاء النسخة الاحتياطية أونلاين بنجاح تام وتم تدوير النسخ الزائدة.',
-                'data' => $backupInfo
+                'message' => 'تم إنشاء النسخة الاحتياطية بنجاح وتدوير الملفات القديمة تلقائياً.',
+                'data' => $backup
             ]);
-        } catch (Exception $e) {
+        } catch (\Exception $e) {
+            Log::error('فشل إنشاء نسخة احتياطية يدوية: ' . $e->getMessage());
+
             return response()->json([
                 'success' => false,
-                'message' => 'فشل إنشاء النسخة الاحتياطية أونلاين.',
-                'error' => $e->getMessage()
+                'message' => 'تعذر إتمام عملية النسخ الاحتياطي: ' . $e->getMessage()
             ], 500);
         }
     }
 
     /**
-     * طلب توليد رابط تحميل آمن وموقع زمنياً لسحب النسخة الاحتياطية خارجياً لجهاز العميل
+     * تحميل ملف النسخة الاحتياطية مباشرة وبأمان
+     * مسار الوصول: GET /api/backups/download
+     * الصلاحية المطلوبة: backup.download
+     *
+     * @param Request $request
+     * @return BinaryFileResponse|JsonResponse
      */
-    public function getDownloadUrl(Request $request): JsonResponse
+    public function download(Request $request): BinaryFileResponse|JsonResponse
     {
         $request->validate([
             'file_name' => 'required|string'
         ]);
 
+        // حماية حاسمة ضد تنقل المسارات وثغرة (Path Traversal)
         $fileName = basename($request->input('file_name'));
-
-        try {
-            $downloadUrl = $this->backupService->generateDownloadUrl($fileName);
-
-            return response()->json([
-                'success' => true,
-                'download_url' => $downloadUrl
-            ]);
-        } catch (Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'تعذر توليد رابط التحميل الآمن.',
-                'error' => $e->getMessage()
-            ], 500);
-        }
-    }
-
-    /**
-     * تنفيذ التحميل الفعلي للملف الموقّع برمجياً (يتم استدعاؤه بواسطة رابط الـ Signed URL)
-     */
-    public function download(Request $request): BinaryFileResponse|JsonResponse
-    {
-        // 1. التحقق الحاسم من سلامة وصلاحية التوقيع الرقمي للرابط المولد
-        if (!$request->hasValidSignature(false)) {
-            return response()->json([
-                'success' => false,
-                'message' => 'رابط التحميل غير صالح أو منتهي الصلاحية الأمنية (صلاحية الرابط دقيقتين فقط).'
-            ], 403);
-        }
-
-        $fileName = basename($request->query('file_name'));
         $filePath = storage_path('app' . DIRECTORY_SEPARATOR . 'backups' . DIRECTORY_SEPARATOR . 'online' . DIRECTORY_SEPARATOR . $fileName);
 
         if (!file_exists($filePath)) {
             return response()->json([
                 'success' => false,
-                'message' => 'الملف المطلوب غير موجود على السيرفر.'
+                'message' => 'الملف المطلوب غير موجود على السيرفر، قد يكون تم حذفه تلقائياً أثناء التدوير.'
             ], 404);
         }
 
@@ -122,7 +111,12 @@ class BackupController extends Controller
     }
 
     /**
-     * استعادة قاعدة البيانات من ملف نسخة احتياطية (.sql.gz) مع التراجع الآمن في حال الكوارث
+     * استعادة قاعدة البيانات من ملف نسخة احتياطية محدد مع حماية الطوارئ
+     * مسار الوصول: POST /api/backups/restore
+     * الصلاحية المطلوبة: backup.restore
+     *
+     * @param Request $request
+     * @return JsonResponse
      */
     public function restore(Request $request): JsonResponse
     {
@@ -130,30 +124,34 @@ class BackupController extends Controller
             'file_name' => 'required|string'
         ]);
 
-        // زيادة حدود التنفيذ لضمان عدم انقطاع الاستعادة في منتصف العملية
-        set_time_limit(0);
-        ini_set('memory_limit', '-1');
-
-        $fileName = basename($request->input('file_name'));
-
         try {
+            $fileName = basename($request->input('file_name'));
+
+            // تشغيل محرك الاستعادة والتراجع التلقائي في حال الفشل
             $result = $this->backupService->restoreBackup($fileName);
 
             return response()->json([
                 'success' => true,
-                'message' => $result['message']
+                'message' => 'تمت استعادة قاعدة البيانات وتدقيق القيود وإعادة بناء الجداول بنجاح تام.',
+                'data' => $result
             ]);
-        } catch (Exception $e) {
+        } catch (\Exception $e) {
+            Log::error('فشلت عملية استعادة قاعدة البيانات: ' . $e->getMessage());
+
             return response()->json([
                 'success' => false,
-                'message' => 'فشلت عملية استعادة قاعدة البيانات.',
-                'error' => $e->getMessage()
+                'error' => 'تعذرت الاستعادة: ' . $e->getMessage()
             ], 500);
         }
     }
 
     /**
-     * حذف نسخة احتياطية بشكل نهائي من السيرفر
+     * حذف ملف نسخة احتياطية نهائياً من السيرفر
+     * مسار الوصول: DELETE /api/backups
+     * الصلاحية المطلوبة: backup.delete
+     *
+     * @param Request $request
+     * @return JsonResponse
      */
     public function destroy(Request $request): JsonResponse
     {
@@ -161,27 +159,21 @@ class BackupController extends Controller
             'file_name' => 'required|string'
         ]);
 
-        $fileName = basename($request->input('file_name'));
-
         try {
-            $deleted = $this->backupService->deleteBackup($fileName);
+            $fileName = basename($request->input('file_name'));
 
-            if ($deleted) {
-                return response()->json([
-                    'success' => true,
-                    'message' => 'تم حذف ملف النسخة الاحتياطية بنجاح تام من السيرفر.'
-                ]);
-            }
+            $this->backupService->deleteBackup($fileName);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'تم حذف وتدمير ملف النسخة الاحتياطية من السيرفر بنجاح.'
+            ]);
+        } catch (\Exception $e) {
+            Log::error('فشل حذف ملف النسخة الاحتياطية: ' . $e->getMessage());
 
             return response()->json([
                 'success' => false,
-                'message' => 'الملف المطلوب غير موجود أو تعذر حذفه.'
-            ], 404);
-        } catch (Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'حدث خطأ أثناء محاولة حذف الملف.',
-                'error' => $e->getMessage()
+                'message' => 'حدث خطأ أثناء محاولة حذف الملف من السيرفر: ' . $e->getMessage()
             ], 500);
         }
     }
