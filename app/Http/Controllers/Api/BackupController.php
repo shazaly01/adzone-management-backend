@@ -101,7 +101,7 @@ class BackupController extends Controller
     public function download(Request $request): BinaryFileResponse|JsonResponse
     {
         // 1. التحقق الحاسم من سلامة وصلاحية التوقيع الرقمي للرابط المولد
-        if (!$request->hasValidSignature()) {
+        if (!$request->hasValidSignature(false)) {
             return response()->json([
                 'success' => false,
                 'message' => 'رابط التحميل غير صالح أو منتهي الصلاحية الأمنية (صلاحية الرابط دقيقتين فقط).'

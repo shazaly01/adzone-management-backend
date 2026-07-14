@@ -187,14 +187,13 @@ class OnlineBackupService
     /**
      * توليد رابط تحميل موقع مؤقتاً لتأمين عمليات السحب الخارجي لجهاز العميل
      */
-    public function generateDownloadUrl(string $fileName): string
+   public function generateDownloadUrl(string $fileName): string
     {
-        $fileName = basename($fileName);
-
         return URL::temporarySignedRoute(
-            'backups.download', // اسم المسار الخاص بالتحميل
-            now()->addMinutes(2), // الرابط صالح لمدة دقيقتين فقط من لحظة طلبه
-            ['file_name' => $fileName]
+            'backups.download',
+            now()->addMinutes(2),
+            ['file_name' => $fileName],
+            false // <--- جعل الرابط نسبياً (Relative) يتجاهل الـ Host والـ Protocol
         );
     }
 
