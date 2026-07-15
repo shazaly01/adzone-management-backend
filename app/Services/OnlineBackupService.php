@@ -31,7 +31,15 @@ class OnlineBackupService
     }
 
     /**
-     * إنشاء نسخة احتياطية جديدة مضغوطة وآمنة تماماً باسم قاعدة البيانات الديناميكي
+     * جلب المنطقة الزمنية المحددة للنسخ الاحتياطي من ملف الـ .env أو افتراض توقيت التطبيق
+     */
+    protected function getBackupTimezone(): string
+    {
+        return env('BACKUP_TIMEZONE', config('app.timezone', 'UTC'));
+    }
+
+    /**
+     * إنشاء نسخة احتياطية جديدة مضغوطة وآمنة تماماً باسم قاعدة البيانات والتوقيت المحلي للمشروع
      */
     public function generateBackup(): array
     {
@@ -51,7 +59,9 @@ class OnlineBackupService
             File::makeDirectory($this->tempPath, 0755, true, true);
         }
 
-        $timestamp = date('Y-m-d_H-i-s');
+        // استخدام المنطقة الزمنية المحلية المحددة في الـ .env لتوليد الطابع الزمني بالصيغة المريحة للعين
+        $timezone = $this->getBackupTimezone();
+        $timestamp = now($timezone)->format('Y-m-d_H\hi\ms\s'); // مثال: 2026-07-15_15h20m11s
         $fileName = "{$dbName}_{$timestamp}.sql.gz";
         $finalPath = $this->backupPath . DIRECTORY_SEPARATOR . $fileName;
 
@@ -82,7 +92,7 @@ class OnlineBackupService
                 'filename' => $fileName,
                 'path' => $finalPath,
                 'size' => $this->formatSize(File::size($finalPath)),
-                'date' => date('Y-m-d H:i:s')
+                'date' => now($timezone)->format('Y-m-d H:i:s')
             ];
         } catch (Exception $e) {
             if (File::exists($tempSqlFile)) {
@@ -152,13 +162,14 @@ class OnlineBackupService
     }
 
     /**
-     * جلب قائمة كافة النسخ الاحتياطية المتوفرة المفلترة بقاعدة البيانات الحالية
+     * جلب قائمة كافة النسخ الاحتياطية المتوفرة المفلترة بقاعدة البيانات والمنطقة الزمنية المحلية
      */
     public function getBackupsList(): array
     {
         $backups = [];
         $dbName = $this->getDatabaseName();
         $prefix = "{$dbName}_";
+        $timezone = $this->getBackupTimezone();
 
         if (File::exists($this->backupPath)) {
             $files = File::files($this->backupPath);
@@ -168,7 +179,8 @@ class OnlineBackupService
                     $backups[] = [
                         'name' => $file->getFilename(),
                         'size' => $this->formatSize($file->getSize()),
-                        'date' => date('Y-m-d H:i:s', $file->getMTime())
+                        // عرض وقت الإنشاء في الجدول بالتوقيت المحلي المختار بدلاً من توقيت السيرفر الافتراضي
+                        'date' => now($timezone)->setTimestamp($file->getMTime())->format('Y-m-d H:i:s')
                     ];
                 }
             }
