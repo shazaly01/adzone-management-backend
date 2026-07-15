@@ -22,7 +22,16 @@ class OnlineBackupService
     }
 
     /**
-     * إنشاء نسخة احتياطية جديدة مضغوطة وآمنة تماماً
+     * جلب اسم قاعدة البيانات الحالية ديناميكياً من الإعدادات
+     */
+    protected function getDatabaseName(): string
+    {
+        $connection = config('database.default');
+        return config("database.connections.{$connection}.database") ?? 'database';
+    }
+
+    /**
+     * إنشاء نسخة احتياطية جديدة مضغوطة وآمنة تماماً باسم قاعدة البيانات الديناميكي
      */
     public function generateBackup(): array
     {
@@ -32,6 +41,7 @@ class OnlineBackupService
         }
 
         $dbConfig = config("database.connections.{$connection}");
+        $dbName = $dbConfig['database'];
 
         if (!File::exists($this->backupPath)) {
             File::makeDirectory($this->backupPath, 0755, true, true);
@@ -42,7 +52,7 @@ class OnlineBackupService
         }
 
         $timestamp = date('Y-m-d_H-i-s');
-        $fileName = "PANDA_ONLINE_BACKUP_{$timestamp}.sql.gz";
+        $fileName = "{$dbName}_{$timestamp}.sql.gz";
         $finalPath = $this->backupPath . DIRECTORY_SEPARATOR . $fileName;
 
         // توليد ملف سيكوال مؤقت غير مضغوط أولاً لحماية الذاكرة
@@ -50,7 +60,7 @@ class OnlineBackupService
 
         try {
             MySql::create()
-                ->setDbName($dbConfig['database'])
+                ->setDbName($dbName)
                 ->setUserName($dbConfig['username'])
                 ->setPassword($dbConfig['password'])
                 ->setHost($dbConfig['host'] ?? '127.0.0.1')
@@ -64,7 +74,7 @@ class OnlineBackupService
             $this->gzipFile($tempSqlFile, $finalPath);
             File::delete($tempSqlFile);
 
-            // تشغيل التدوير التلقائي للاحتفاظ بـ 50 نسخة فقط
+            // تشغيل التدوير التلقائي للاحتفاظ بـ 50 نسخة فقط تخص قاعدة البيانات هذه
             $this->rotateBackups();
 
             return [
@@ -83,7 +93,7 @@ class OnlineBackupService
     }
 
     /**
-     * استعادة قاعدة البيانات مع شبكة أمان الطوارئ التلقائية
+     * استعادة قاعدة البيانات مع شبكة أمان الطوارئ التلقائية المخصصة
      */
     public function restoreBackup(string $fileName): array
     {
@@ -97,7 +107,7 @@ class OnlineBackupService
         $connection = config('database.default');
         $dbConfig = config("database.connections.{$connection}");
 
-        // 1. أخذ نسخة أمان لحظية (طوارئ) قبل لمس أي جدول
+        // 1. أخذ نسخة أمان لحظية (طوارئ) مخصصة باسم قاعدة البيانات قبل لمس أي جدول
         $this->generateEmergencyBackup($dbConfig);
 
         $tempSqlFile = $this->tempPath . DIRECTORY_SEPARATOR . 'temp_restore_extract.sql';
@@ -142,16 +152,19 @@ class OnlineBackupService
     }
 
     /**
-     * جلب قائمة كافة النسخ الاحتياطية المتوفرة
+     * جلب قائمة كافة النسخ الاحتياطية المتوفرة المفلترة بقاعدة البيانات الحالية
      */
     public function getBackupsList(): array
     {
         $backups = [];
+        $dbName = $this->getDatabaseName();
+        $prefix = "{$dbName}_";
 
         if (File::exists($this->backupPath)) {
             $files = File::files($this->backupPath);
             foreach ($files as $file) {
-                if ($file->getExtension() === 'gz' && str_contains($file->getFilename(), 'PANDA_ONLINE_BACKUP_')) {
+                // فلترة دقيقة تضمن جلب الملفات التي تبدأ باسم قاعدة البيانات الحالية فقط
+                if ($file->getExtension() === 'gz' && str_starts_with($file->getFilename(), $prefix)) {
                     $backups[] = [
                         'name' => $file->getFilename(),
                         'size' => $this->formatSize($file->getSize()),
@@ -187,7 +200,7 @@ class OnlineBackupService
     /**
      * توليد رابط تحميل موقع مؤقتاً لتأمين عمليات السحب الخارجي لجهاز العميل
      */
-   public function generateDownloadUrl(string $fileName): string
+    public function generateDownloadUrl(string $fileName): string
     {
         return URL::temporarySignedRoute(
             'backups.download',
@@ -198,7 +211,7 @@ class OnlineBackupService
     }
 
     /**
-     * إدارة تدوير الملفات للاحتفاظ بـ 50 نسخة فقط وحذف الأقدم
+     * إدارة تدوير الملفات للاحتفاظ بـ 50 نسخة فقط وحذف الأقدم لقاعدة البيانات الحالية حصرياً
      */
     protected function rotateBackups(): void
     {
@@ -208,9 +221,12 @@ class OnlineBackupService
 
         $files = File::files($this->backupPath);
         $backupFiles = [];
+        $dbName = $this->getDatabaseName();
+        $prefix = "{$dbName}_";
 
         foreach ($files as $file) {
-            if ($file->getExtension() === 'gz' && str_contains($file->getFilename(), 'PANDA_ONLINE_BACKUP_')) {
+            // التصفية بناءً على البادئة الديناميكية لمنع تداخل المشاريع
+            if ($file->getExtension() === 'gz' && str_starts_with($file->getFilename(), $prefix)) {
                 $backupFiles[] = [
                     'path' => $file->getPathname(),
                     'mtime' => $file->getMTime()
@@ -242,7 +258,7 @@ class OnlineBackupService
             '-h', $dbConfig['host'] ?? '127.0.0.1',
             '-P', $dbConfig['port'] ?? '3306',
             '-u', $dbConfig['username'],
-            '--execute=source ' . $filePath, // استخدام الأمر الداخلي لميكروسف لعدم فتح ثغرات حقن أو استهلاك الذاكرة
+            '--execute=source ' . $filePath, // استخدام الأمر الداخلي لـ MySQL لعدم فتح ثغرات حقن أو استهلاك الذاكرة
             $dbConfig['database']
         ];
 
@@ -356,19 +372,20 @@ class OnlineBackupService
     }
 
     /**
-     * توليد نسخة الطوارئ اللحظية السريعة قبل الاستعادة
+     * توليد نسخة الطوارئ اللحظية السريعة قبل الاستعادة مخصصة باسم قاعدة البيانات
      */
     protected function generateEmergencyBackup(array $dbConfig): void
     {
-        $emergencyFile = $this->backupPath . DIRECTORY_SEPARATOR . 'EMERGENCY_ROLLBACK.sql.gz';
-        $tempSql = $this->tempPath . DIRECTORY_SEPARATOR . 'temp_emergency.sql';
+        $dbName = $dbConfig['database'];
+        $emergencyFile = $this->backupPath . DIRECTORY_SEPARATOR . "EMERGENCY_ROLLBACK_{$dbName}.sql.gz";
+        $tempSql = $this->tempPath . DIRECTORY_SEPARATOR . "temp_emergency_{$dbName}.sql";
 
         if (!File::exists($this->tempPath)) {
             File::makeDirectory($this->tempPath, 0755, true, true);
         }
 
         MySql::create()
-            ->setDbName($dbConfig['database'])
+            ->setDbName($dbName)
             ->setUserName($dbConfig['username'])
             ->setPassword($dbConfig['password'])
             ->setHost($dbConfig['host'] ?? '127.0.0.1')
@@ -383,20 +400,21 @@ class OnlineBackupService
     }
 
     /**
-     * تنفيذ التراجع التلقائي من ملف الطوارئ في حال الكوارث
+     * تنفيذ التراجع التلقائي من ملف الطوارئ المخصص في حال الكوارث
      */
     protected function rollbackEmergency(array $dbConfig): void
     {
-        $emergencyFile = $this->backupPath . DIRECTORY_SEPARATOR . 'EMERGENCY_ROLLBACK.sql.gz';
+        $dbName = $dbConfig['database'];
+        $emergencyFile = $this->backupPath . DIRECTORY_SEPARATOR . "EMERGENCY_ROLLBACK_{$dbName}.sql.gz";
         if (!File::exists($emergencyFile)) {
             return;
         }
 
         try {
-            $tempEmergencySql = $this->tempPath . DIRECTORY_SEPARATOR . 'temp_emergency_rollback.sql';
+            $tempEmergencySql = $this->tempPath . DIRECTORY_SEPARATOR . "temp_emergency_rollback_{$dbName}.sql";
             $this->gunzipFile($emergencyFile, $tempEmergencySql);
 
-            $this->dropAllTables($dbConfig['database']);
+            $this->dropAllTables($dbName);
 
             try {
                 $this->executeMysqlImport($dbConfig, $tempEmergencySql);
@@ -408,13 +426,17 @@ class OnlineBackupService
             File::delete($emergencyFile);
         } catch (Exception $criticalError) {
             // تسجيل الكارثة في نظام التقارير إذا خرج التراجع عن السيطرة
-            logger()->critical('فشل حرج: تعذر استعادة نسخة الطوارئ التلقائية للبيانات بعد فشل الاستعادة الأساسي! التفاصيل: ' . $criticalError->getMessage());
+            logger()->critical("فشل حرج: تعذر استعادة نسخة الطوارئ التلقائية لقاعدة البيانات {$dbName} بعد فشل الاستعادة الأساسي! التفاصيل: " . $criticalError->getMessage());
         }
     }
 
+    /**
+     * مسح نسخة الطوارئ المخصصة لقاعدة البيانات الحالية
+     */
     protected function clearEmergencyBackup(): void
     {
-        $emergencyFile = $this->backupPath . DIRECTORY_SEPARATOR . 'EMERGENCY_ROLLBACK.sql.gz';
+        $dbName = $this->getDatabaseName();
+        $emergencyFile = $this->backupPath . DIRECTORY_SEPARATOR . "EMERGENCY_ROLLBACK_{$dbName}.sql.gz";
         if (File::exists($emergencyFile)) {
             File::delete($emergencyFile);
         }
