@@ -42,4 +42,9 @@ return [
         'sender_id' => env('RASAEL_SENDER_ID'),
     ],
 
+  'deepseek' => [
+        'key' => env('DEEPSEEK_API_KEY'),
+        'url' => env('DEEPSEEK_API_URL', 'https://api.deepseek.com/chat/completions'),
+    ],
+
 ];

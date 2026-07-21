@@ -21,6 +21,7 @@ class Item extends Model
         'category_id',
         'category_path',
         'name',
+        'aliases',
         'item_type',
         'profit_margin',
         'base_unit_id',

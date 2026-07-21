@@ -23,6 +23,7 @@ use App\Http\Controllers\Api\ItemController;
 use App\Http\Controllers\Api\PriceListController;
 use App\Http\Controllers\Api\PurchaseController;
 use App\Http\Controllers\Api\SaleController;
+use App\Http\Controllers\Api\PendingInvoiceItemController;
 
 // [تعديل التوافق]: استيراد متحكمات العملاء والموردين المفقودة
 use App\Http\Controllers\Api\CustomerController;
@@ -109,6 +110,11 @@ Route::get('price-lists', [PriceListController::class, 'index']);
     Route::post('items/refresh-stock', [ItemController::class, 'refreshStock'])->name('items.refresh_stock');
     Route::put('items/{id}/reorder-level', [ItemController::class, 'updateReorderLevel']);
     Route::apiResource('items', ItemController::class);
+
+    // موديول استقبال واستبقاء السطور الصوتية والنصية للفحص والمعاينة
+    Route::apiResource('pending-invoice-items', PendingInvoiceItemController::class)->only([
+        'index', 'store'
+    ]);
 
     // مسارات موديول المشتريات ومردوداتها المدمج (تغطي الإضافة، التعديل الفوري، الحذف، والاستعراض)
     Route::apiResource('purchases', PurchaseController::class);

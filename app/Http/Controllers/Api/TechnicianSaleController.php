@@ -26,7 +26,7 @@ class TechnicianSaleController extends Controller
     }
 
     /**
-     * استعراض قائمة الفواتير النهائية التي تحتوي على مواد خام وجاهزة لتنفيذ الفني
+     * استعراض قائمة الفواتير النهائية التي تحتوي على مواد خام وجاهزة لتنفيذ الفني مع تطبيق الفلاتر كاملة
      */
     public function index(Request $request): AnonymousResourceCollection
     {
@@ -35,12 +35,37 @@ class TechnicianSaleController extends Controller
             abort(403, 'عذراً، أنت لا تملك الصلاحية الكافية لاستعراض شاشة الفني.');
         }
 
-        // جلب الفواتير النهائية التي تحتوي على أسطر بها مواد خام (Raw Materials) سواء كانت مترية أو عددية
+        // جلب الفواتير النهائية مع تطابق فلاتر المبيعات بالكامل داخل الـ Controller مباشرة
         $sales = Sale::with(['store', 'customer', 'user', 'items.item', 'items.itemUnit.unit'])
             ->whereNotNull('journal_entry_id')
             ->where('invoice_type', 'sale')
             ->whereHas('items.item', function ($query) {
                 $query->where('is_dimensional', true); // الفرز بناءً على طبيعة الصنف المترية فقط
+            })
+            // 1. فلتر البحث السريع (رقم الفاتورة، المعرف الرقمي، أو الملاحظات)
+            ->when($request->filled('search'), function ($query) use ($request) {
+                $search = trim($request->search);
+                $query->where(function ($q) use ($search) {
+                    $q->where('invoice_number', 'like', "%{$search}%")
+                      ->orWhere('id', 'like', "%{$search}%")
+                      ->orWhere('notes', 'like', "%{$search}%");
+                });
+            })
+            // 2. فلتر مخزن الصرف
+            ->when($request->filled('store_id'), function ($query) use ($request) {
+                $query->where('store_id', $request->store_id);
+            })
+            // 3. فلتر حساب العميل
+            ->when($request->filled('customer_id'), function ($query) use ($request) {
+                $query->where('customer_id', $request->customer_id);
+            })
+            // 4. فلتر تاريخ البداية (من تاريخ)
+            ->when($request->filled('from_date'), function ($query) use ($request) {
+                $query->whereDate('invoice_date', '>=', $request->from_date);
+            })
+            // 5. فلتر تاريخ النهاية (إلى تاريخ)
+            ->when($request->filled('to_date'), function ($query) use ($request) {
+                $query->whereDate('invoice_date', '<=', $request->to_date);
             })
             ->latest('invoice_date')
             ->paginate(15);
@@ -73,7 +98,7 @@ class TechnicianSaleController extends Controller
         $this->authorize('swapRawMaterials', $sale);
 
         try {
-            // 2. تمرير المعاملات الثلاثة كاملة (الفاتورة، المصفوفة، والحالة التشغيلية الجديدة المعتمدة) لحل خطأ ArgumentCountError
+            // 2. تمرير المعاملات الثلاثة كاملة (الفاتورة، المصفوفة، والحالة التشغيلية الجديدة المعتمدة)
             $updatedSale = $this->saleService->swapRawMaterials(
                 $sale,
                 $request->validated()['items'],
