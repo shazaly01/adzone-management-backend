@@ -28,6 +28,7 @@ use App\Http\Controllers\Api\PendingInvoiceItemController;
 // [تعديل التوافق]: استيراد متحكمات العملاء والموردين المفقودة
 use App\Http\Controllers\Api\CustomerController;
 use App\Http\Controllers\Api\SupplierController;
+use App\Http\Controllers\Api\EmployeeController;
 
 // --- استيراد متحكمات قسم التقارير الموحد المحدثة ---
 use App\Http\Controllers\Api\Reports\InventoryReportController;
@@ -88,6 +89,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // [تعديل التوافق]: إضافة مسارات موديول العملاء والموردين لربطها بالواجهات الأمامية والحساب المجمع
     Route::apiResource('customers', CustomerController::class);
     Route::apiResource('suppliers', SupplierController::class);
+    Route::apiResource('employees', EmployeeController::class);
 
     // 8. إدارة القيود اليومية وسندات الصرف والقبض المركبة
     Route::apiResource('journal-entries', JournalEntryController::class)->parameters([

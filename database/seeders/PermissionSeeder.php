@@ -44,6 +44,9 @@ class PermissionSeeder extends Seeder
             // إدارة حسابات الموردين
             'supplier.view', 'supplier.create', 'supplier.update', 'supplier.delete',
 
+
+            'employee.view', 'employee.create', 'employee.update', 'employee.delete',
+
             // إدارة بنود المصروفات التشغيلية
             'expense.view', 'expense.create', 'expense.update', 'expense.delete',
 
@@ -112,6 +115,9 @@ class PermissionSeeder extends Seeder
             'bank.view', 'bank.create',
             'customer.view', 'customer.create', 'customer.update',
             'supplier.view', 'supplier.create', 'supplier.update',
+            'employee.view', 'employee.create', 'employee.update',
+            // إدارة حسابات الموظفين
+            'employee.view', 'employee.create', 'employee.update', 'employee.delete',
             'expense.view', 'expense.create',
             'store.view', 'store.create',
             'category.view',

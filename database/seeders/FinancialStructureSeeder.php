@@ -237,6 +237,19 @@ class FinancialStructureSeeder extends Seeder
             ]
         );
 
+        // [إضافة]: حساب سلف الموظفين التابع للأصول المتداولة (11) -> مدين
+        Account::updateOrCreate(
+            ['code' => Account::CODE_EMPLOYEE_LOANS],
+            [
+                'parent_id'       => $currentAssets->id,
+                'name'            => 'حساب ذمم سلف الموظفين',
+                'type'            => 'system',
+                'nature'          => 'debit',
+                'opening_balance' => 0.00,
+                'current_balance' => 0.00,
+            ]
+        );
+
         // الحسابات التابعة لـ الأصول الثابتة (12)
         Account::updateOrCreate(
             ['code' => '1201'],
@@ -293,6 +306,20 @@ class FinancialStructureSeeder extends Seeder
             [
                 'parent_id'       => $currentLiabilities->id,
                 'name'            => 'حساب ذمم المصممين المستحقة الإجمالي',
+                'type'            => 'system',
+                'nature'          => 'credit',
+                'opening_balance' => 0.00,
+                'current_balance' => 0.00,
+            ]
+        );
+
+
+        // [إضافة]: حساب مستحقات رواتب وأجور الموظفين التابع للالتزامات المتداولة (21) -> دائن
+        Account::updateOrCreate(
+            ['code' => Account::CODE_EMPLOYEE_PAYROLL],
+            [
+                'parent_id'       => $currentLiabilities->id,
+                'name'            => 'حساب مستحقات رواتب وأجور الموظفين',
                 'type'            => 'system',
                 'nature'          => 'credit',
                 'opening_balance' => 0.00,
@@ -401,6 +428,19 @@ class FinancialStructureSeeder extends Seeder
             ]
         );
 
+
+      // [إضافة]: حساب مصروف الأجور والمرتبات التابع للمصروفات التشغيلية (41) -> مدين
+        Account::updateOrCreate(
+            ['code' => Account::CODE_EMPLOYEE_EXPENSES],
+            [
+                'parent_id'       => $operatingExpenses->id,
+                'name'            => 'حساب مصروف الأجور والمرتبات',
+                'type'            => 'expense',
+                'nature'          => 'debit',
+                'opening_balance' => 0.00,
+                'current_balance' => 0.00,
+            ]
+        );
         // الحسابات التابعة لـ تكلفة البضاعة المباعة (42) -> مدين
         Account::updateOrCreate(
             ['code' => '4201'],

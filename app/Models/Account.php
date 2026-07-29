@@ -32,6 +32,11 @@ class Account extends Model
 
     public const CODE_DESIGNERS_LEDGER   = '2103'; // حساب ذمم المصممين المستحقة (التزامات متداولة)
     public const CODE_DESIGN_EXPENSES    = '4103'; // حساب مصروف عمولات تصميم (مصروفات تشغيلية)
+
+    // [ثوابت حسابات الموظفين الحاكمة المضافة]
+    public const CODE_EMPLOYEE_LOANS     = '1106'; // حساب ذمم سلف الموظفين (أصول متداولة)
+    public const CODE_EMPLOYEE_PAYROLL   = '2104'; // حساب مستحقات رواتب وأجور الموظفين (التزامات متداولة)
+    public const CODE_EMPLOYEE_EXPENSES  = '4104'; // حساب مصروف الأجور والمرتبات (مصروفات تشغيلية)
     // -----------------------------------------------------------
 
     protected $fillable = [
@@ -119,5 +124,13 @@ class Account extends Model
     public function store(): HasOne
     {
         return $this->hasOne(Store::class, 'account_id');
+    }
+
+    /**
+     * الموظفون المرتبطون بهذا الحساب الحاكم إن وجد
+     */
+    public function employees(): HasMany
+    {
+        return $this->hasMany(Employee::class, 'account_id');
     }
 }

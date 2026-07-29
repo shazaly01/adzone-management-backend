@@ -30,8 +30,8 @@ class SaleService
         $this->journalService = $journalService;
     }
 
-    /**
-     * جلب فواتير المبيعات ممررة عبر الـ Pagination مع تطبيق الفلاتر المتقدمة ونطاق التاريخ
+/**
+     * جلب فواتير المبيعات ممررة عبر الـ Pagination مع تطبيق الفلاتر المتقدمة ونطاق التاريخ والفلتر الصفري
      */
     public function getPaginatedSales(array $filters = [], int $perPage = 15)
     {
@@ -70,6 +70,11 @@ class SaleService
         // 6. فلتر تاريخ النهاية (إلى تاريخ)
         if (!empty($filters['to_date'])) {
             $query->whereDate('invoice_date', '<=', $filters['to_date']);
+        }
+
+        // 7. فلتر الفواتير الصفرية (عند تفعيل الخيار من الواجهة)
+        if (isset($filters['is_zero']) && filter_var($filters['is_zero'], FILTER_VALIDATE_BOOLEAN)) {
+            $query->where('grand_total', 0);
         }
 
         // الترتيب من الأحدث للأقدم وإرجاع النتائج مصفحة
