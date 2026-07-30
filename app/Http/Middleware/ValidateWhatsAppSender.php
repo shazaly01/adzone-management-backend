@@ -27,8 +27,16 @@ class ValidateWhatsAppSender
             'all_payload' => $request->all(),
         ]);
 
-        // 1. تجاهل أحداث النظام غير النصية (مثل onAck, onPresenceChanged) فوراً بـ 200 OK
-        if (is_string($event) && !empty($event) && !in_array($event, ['onMessage', 'onAnyMessage', 'message', 'unreadmessages'])) {
+        // 1. السماح بالأحداث النصية (بما فيها onSelfMessage) وتجاهل أحداث النظام غير النصية
+        $allowedEvents = [
+            'onmessage',
+            'onanymessage',
+            'onselfmessage',
+            'message',
+            'unreadmessages',
+        ];
+
+        if (is_string($event) && !empty($event) && !in_array(strtolower($event), $allowedEvents, true)) {
             Log::notice('[WhatsApp Webhook] Ignored system event', ['event' => $event]);
 
             return response()->json([
