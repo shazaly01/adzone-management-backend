@@ -127,15 +127,17 @@ class WhatsAppWebhookController extends Controller
      * @param string $senderPhone
      * @return bool
      */
-    protected function isSelfMessageFromManager(string $senderPhone): bool
-    {
-        $managerPhone = config('services.whatsapp.manager_phone');
+   protected function isSelfMessageFromManager(string $senderPhone): bool
+{
+    $managerPhone = config('services.wppconnect.admin_phone')
+        ?? config('services.whatsapp.admin_phone')
+        ?? '';
 
-        if (empty($managerPhone)) {
-            return true;
-        }
-
-        $cleanManagerPhone = preg_replace('/[^0-9]/', '', (string) $managerPhone);
-        return $senderPhone === $cleanManagerPhone;
+    if (empty($managerPhone)) {
+        return true;
     }
+
+    $cleanManagerPhone = preg_replace('/[^0-9]/', '', (string) $managerPhone);
+    return $senderPhone === $cleanManagerPhone;
+}
 }
