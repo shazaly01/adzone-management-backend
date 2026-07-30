@@ -35,6 +35,8 @@ use App\Http\Controllers\Api\Reports\InventoryReportController;
 use App\Http\Controllers\Api\Reports\FinancialReportController;
 use App\Http\Controllers\Api\OpeningStockController;
 use App\Http\Controllers\Api\TechnicianSaleController;
+
+use App\Http\Controllers\Api\WhatsAppWebhookController;
 /*
 |--------------------------------------------------------------------------
 | API Routes
@@ -43,6 +45,11 @@ use App\Http\Controllers\Api\TechnicianSaleController;
 
 // --- المسارات العامة (Public Routes) ---
 Route::post('/login', [AuthController::class, 'login']);
+
+
+
+    Route::post('/whatsapp/webhook', [WhatsAppWebhookController::class, 'handle'])
+    ->middleware(\App\Http\Middleware\ValidateWhatsAppSender::class);
 
 // --- المسارات المحمية (Protected Routes) ---
 Route::middleware('auth:sanctum')->group(function () {
@@ -168,4 +175,8 @@ Route::get('price-lists', [PriceListController::class, 'index']);
     });
     Route::post('/logout', [AuthController::class, 'logout']);
 
+
+
 });
+
+

@@ -47,4 +47,10 @@ return [
         'url' => env('DEEPSEEK_API_URL', 'https://api.deepseek.com/chat/completions'),
     ],
 
+    'wppconnect' => [
+        'base_url'    => env('WPP_BASE_URL'),
+        'token'       => env('WPP_BEARER_TOKEN'),
+        'admin_phone' => env('WHATSAPP_ADMIN_PHONE'),
+    ],
+
 ];
