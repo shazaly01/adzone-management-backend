@@ -20,7 +20,7 @@ class WhatsAppWebhookController extends Controller
      */
     public function handle(Request $request): JsonResponse
     {
-        // 1. استخراج رقم المرسل المتحقق منه مسبقاً من الـ Middleware
+        // 1. استخراج رقم المرسل المتحقق منه مسبقاً من الـ Middleware أو من الجسم
         $senderPhone = $request->attributes->get('sender_phone');
 
         if (!$senderPhone) {
@@ -30,11 +30,15 @@ class WhatsAppWebhookController extends Controller
                 ?? $request->input('data.key.remoteJid')
                 ?? '';
 
-            $senderPhone = preg_replace('/[^0-9]/', '', strtok($sender, '@'));
+            if (is_array($sender)) {
+                $sender = json_encode($sender);
+            }
+
+            $senderPhone = preg_replace('/[^0-9]/', '', strtok((string) $sender, '@'));
         }
 
-        // 2. استخراج نص الرسالة (دعم هياكل WPPConnect و Evolution)
-        $messageText = $request->input('body')
+        // 2. استخراج نص الرسالة بطريقة آمنة من المصفوفات
+        $rawMessageText = $request->input('body')
             ?? $request->input('content')
             ?? $request->input('data.body')
             ?? $request->input('data.content')
@@ -43,39 +47,47 @@ class WhatsAppWebhookController extends Controller
             ?? $request->input('message.text')
             ?? '';
 
-        $trimmedText = trim($messageText);
+        if (is_array($rawMessageText)) {
+            $rawMessageText = '';
+        }
 
-        // 3. تجاهل الرسائل الفارغة
+        $trimmedText = trim((string) $rawMessageText);
+
+        // 3. تجاهل الرسائل الفارغة أو أحداث النظام غير النصية
         if (empty($trimmedText)) {
             return response()->json(['status' => 'ignored_empty_message'], 200);
         }
 
         // 4. الحماية التامة من الحلقة التكرارية (Anti-Loop):
-        // إذا كانت الرسالة تبدأ بالرمز المخفي (\u{200B})، فهذا يعني قطعاً أنها رد صادر من البوت
         if (str_starts_with($trimmedText, "\u{200B}")) {
             return response()->json(['status' => 'ignored_bot_outbound_response'], 200);
         }
 
-        // 5. التعامل مع ميزة الإرسال الذاتي (fromMe):
-        // إذا كانت الرسالة تحمل flag الصدور (fromMe = true)
-        // يتم قبولها فقط إذا كانت صادرة من رقم المدير المعتمد كطلب استعلام ذاتي، وتجاهلها لو من طرف آخر
-        $fromMe = $request->input('fromMe')
+        // 5. التعامل مع ميزة الإرسال الذاتي (fromMe) بحزم
+        $rawFromMe = $request->input('fromMe')
             ?? $request->input('data.fromMe')
             ?? $request->input('data.key.fromMe')
             ?? $request->input('key.fromMe')
             ?? false;
 
-        if ($fromMe && !$this->isSelfMessageFromManager($senderPhone)) {
+        $fromMe = filter_var($rawFromMe, FILTER_VALIDATE_BOOLEAN);
+
+        if ($fromMe && !$this->isSelfMessageFromManager((string) $senderPhone)) {
             return response()->json(['status' => 'ignored_outbound_message'], 200);
         }
 
-        // 6. استخراج معرف الرسالة الأصلي أو توليد Hash ثابت من (الرقم + النص)
+        // 6. استخراج معرف الرسالة بأمان لمنع Array to string conversion
         $rawId = $request->input('id')
             ?? $request->input('data.id')
             ?? $request->input('data.key.id')
             ?? $request->input('key.id');
 
-        $messageId = $rawId ?: md5($senderPhone . '_' . $trimmedText);
+        if (is_array($rawId)) {
+            $rawId = $rawId['id'] ?? $rawId['_serialized'] ?? json_encode($rawId);
+        }
+
+        $rawIdString = is_string($rawId) || is_numeric($rawId) ? (string) $rawId : '';
+        $messageId = !empty($rawIdString) ? $rawIdString : md5($senderPhone . '_' . $trimmedText);
 
         // 7. منع معالجة الرسائل المكررة بشكل ذري (Atomic Lock)
         $cacheKey = 'wa_msg_' . $messageId;
@@ -87,7 +99,7 @@ class WhatsAppWebhookController extends Controller
 
         try {
             // 8. إرسال مهمة المعالجة إلى الـ Queue الخلفي والاستجابة الفورية للسيرفر
-            ProcessWhatsAppMessageJob::dispatch($senderPhone, $trimmedText, $messageId);
+            ProcessWhatsAppMessageJob::dispatch((string) $senderPhone, $trimmedText, $messageId);
 
             return response()->json([
                 'status'  => 'success',
@@ -123,7 +135,7 @@ class WhatsAppWebhookController extends Controller
             return true;
         }
 
-        $cleanManagerPhone = preg_replace('/[^0-9]/', '', $managerPhone);
+        $cleanManagerPhone = preg_replace('/[^0-9]/', '', (string) $managerPhone);
         return $senderPhone === $cleanManagerPhone;
     }
 }
