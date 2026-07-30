@@ -4,6 +4,7 @@ namespace App\Http\Middleware;
 
 use Closure;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\Response;
 
 class ValidateWhatsAppSender
@@ -17,9 +18,19 @@ class ValidateWhatsAppSender
      */
     public function handle(Request $request, Closure $next): Response
     {
-        // 1. تجاهل أحداث النظام غير النصية (مثل onAck, onPresenceChanged) فوراً بـ 200 OK
+        // 0. تسجيل الاستقبال الأولي للـ Webhook
         $event = $request->input('event') ?? $request->input('type') ?? '';
+
+        Log::info('[WhatsApp Webhook] Incoming Webhook request received', [
+            'event'       => $event,
+            'ip'          => $request->ip(),
+            'all_payload' => $request->all(),
+        ]);
+
+        // 1. تجاهل أحداث النظام غير النصية (مثل onAck, onPresenceChanged) فوراً بـ 200 OK
         if (is_string($event) && !empty($event) && !in_array($event, ['onMessage', 'onAnyMessage', 'message', 'unreadmessages'])) {
+            Log::notice('[WhatsApp Webhook] Ignored system event', ['event' => $event]);
+
             return response()->json([
                 'status'  => 'ignored_system_event',
                 'message' => 'System event acknowledged and ignored.'
@@ -48,32 +59,48 @@ class ValidateWhatsAppSender
             ?? (!empty($rawSenderString) && str_contains($rawSenderString, '@g.us'));
 
         if (filter_var($isGroup, FILTER_VALIDATE_BOOLEAN)) {
+            Log::notice('[WhatsApp Webhook] Ignored group message', ['sender' => $rawSenderString]);
+
             return response()->json([
                 'status'  => 'ignored_group_message',
                 'message' => 'Group messages are ignored.'
             ], Response::HTTP_OK);
         }
 
-        // 4. التحقق من وجود مرسل (إرجاع 200 OK لتطمين WPPConnect بدون أخطاء 400)
+        // 4. التحقق من وجود مرسل
         if (empty($rawSenderString)) {
+            Log::warning('[WhatsApp Webhook] No valid sender found in payload');
+
             return response()->json([
                 'status'  => 'ignored_no_sender',
                 'message' => 'Webhook payload does not contain a valid sender.'
             ], Response::HTTP_OK);
         }
 
-        // 5. تنظيف رقم المرسل
-        $cleanSender = strtok($rawSenderString, '@');
-        $senderDigits = preg_replace('/[^0-9]/', '', (string) $cleanSender);
+        // 5. تنظيف رقم المرسل بطريقة آمنة تتوافق مع نظام WPPConnect Multi-Device (إزالة @ ورمز الجهاز :xx)
+        $withoutDomain = strtok($rawSenderString, '@');
+        $phoneOnly = strtok($withoutDomain, ':');
+        $senderDigits = preg_replace('/[^0-9]/', '', (string) $phoneOnly);
 
         // 6. قراءة وتنظيف رقم المدير من الإعدادات
         $rawAdminPhone = config('services.wppconnect.admin_phone')
             ?? config('services.whatsapp.admin_phone')
             ?? config('services.whatsapp.manager_phone')
             ?? '';
-        $adminDigits = preg_replace('/[^0-9]/', '', (string) $rawAdminPhone);
+
+        $withoutAdminDomain = strtok((string) $rawAdminPhone, '@');
+        $phoneAdminOnly = strtok($withoutAdminDomain, ':');
+        $adminDigits = preg_replace('/[^0-9]/', '', (string) $phoneAdminOnly);
+
+        Log::info('[WhatsApp Webhook] Phone Parsing Verification', [
+            'raw_sender_string' => $rawSenderString,
+            'parsed_sender'     => $senderDigits,
+            'configured_admin'  => $adminDigits,
+        ]);
 
         if (empty($adminDigits) || empty($senderDigits)) {
+            Log::error('[WhatsApp Webhook] Missing sender digits or admin configuration missing');
+
             return response()->json([
                 'status'  => 'ignored_unauthorized',
                 'message' => 'Unauthorized WhatsApp sender or admin phone misconfigured.'
@@ -82,6 +109,11 @@ class ValidateWhatsAppSender
 
         // 7. مطابقة مرنة للرقم
         if (!$this->isPhoneMatch($senderDigits, $adminDigits)) {
+            Log::warning('[WhatsApp Webhook] Sender phone does not match admin phone', [
+                'sender' => $senderDigits,
+                'admin'  => $adminDigits,
+            ]);
+
             return response()->json([
                 'status'  => 'ignored_unauthorized',
                 'message' => 'Unauthorized WhatsApp sender.'
@@ -90,6 +122,8 @@ class ValidateWhatsAppSender
 
         // 8. حفظ الرقم المنظف في attributes الطلب للاستخدام في الـ Controller
         $request->attributes->set('sender_phone', $senderDigits);
+
+        Log::info('[WhatsApp Webhook] Middleware passed successfully', ['sender_phone' => $senderDigits]);
 
         return $next($request);
     }
