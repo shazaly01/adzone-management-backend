@@ -71,7 +71,7 @@ class IntentParsingService
     }
 
     /**
-     * بناء الـ System Prompt الديناميكي
+     * بناء الـ System Prompt الديناميكي والنظيف
      */
     protected function buildSystemPrompt(): string
     {
@@ -81,13 +81,16 @@ class IntentParsingService
         $registry = app(QueryHandlerRegistry::class);
         $handlers = $registry->getRegisteredHandlers();
 
+        // بناء توثيق النيات ديناميكياً من الـ Handlers المسجلة بدون تكرار
         $intentsDocumentation = "";
         foreach ($handlers as $handler) {
-            $description = method_exists($handler, 'getDescription') ? $handler->getDescription() : 'معالجة الاستعلام المخصص';
+            $description = method_exists($handler, 'getDescription')
+                ? $handler->getDescription()
+                : 'معالجة الاستعلام المخصص';
             $intentsDocumentation .= "- \"{$handler->getIntentName()}\": {$description}\n";
         }
-        $intentsDocumentation .= "- \"party_balance\": استعلام عن رصيد عميل أو مورد (مثال: رصيد شركة البركة، حساب العميل أحمد، كم على المورد علي).\n";
-        $intentsDocumentation .= "- \"item_stock\": استعلام عن رصيد مخزون صنف أو عدة أصناف (مثال: رصيد بنر 130، كم متوفر من أحبار هاس، جرد ورق 70 جرام).\n";
+
+        // النية الافتراضية للطلبات غير المعروفة
         $intentsDocumentation .= "- \"unknown\": إذا كان الطلب غير واضح أو غير مرتبط بنظام ERP.";
 
         return <<<PROMPT
@@ -124,21 +127,21 @@ class IntentParsingService
    - احسب تاريخ أقرب يوم مطالع سابق للمطلوب (مثلاً "الاثنين الماضي").
 3. التواريخ الصريحة:
    - "15/5" أو "15-5" حوّلها إلى السنة الحالية "2026-05-15".
-4. في تقارير المخزون (item_stock) وأرصدة الحسابات (party_balance)، اجعل قيمة date دائماً null.
+4. في تقارير المخزون (item_stock)، أرصدة الحسابات (party_balance)، وتفاصيل آخر فاتورة (latest_invoice)، اجعل قيمة date دائماً null إلا إذا حُدد تاريخ صريح.
 
 قواعد استخراج اسم الصنف (item_name) والتطبيع اللغوي:
 1. قم باستخراج الكلمات الأساسية فقط للصنف وتجريد النص تماماً من كلمات الزيادة مثل: (عايز، شوف لي، كم، رصيد، متوفر، عندكم، في، اسأل لي عن).
 2. إزالة كافة حركات التشكيل، وتوحيد الهمزات (أ، إ، آ -> ا)، والياء (ى -> ي)، والتاء المربوطة (ة -> ه).
 
 قواعد استخراج اسم العميل/المورد (party_name) وتحديد النوع (party_type):
-1. party_name: استخرج اسم الشخص أو الشركة مجرداً من كلمات الطلب (مثل: كشف حساب، رصيد، حساب، كم عليه، كم له).
+1. party_name: استخرج اسم الشخص أو الشركة مجرداً من كلمات الطلب (مثل: كشف حساب، رصيد، حساب، كم عليه، كم له، آخر فاتورة، أحدث فاتورة، تفاصيل فاتورة).
 2. party_type:
-   - إذا ذكر النص "عميل" أو كان الطلب يشير لمديونية بيع -> "customer".
+   - إذا ذكر النص "عميل" أو كان الطلب يشير لمديونية بيع أو فاتورة مبيعات -> "customer".
    - إذا ذكر النص "مورد" أو كان الطلب يشير لمستحقات توريد -> "supplier".
    - إذا لم يتضح نوع الكيان بدقة -> "all".
 
 القيم الافتراضية:
-- date: استخدم "{$today}" إذا قصد المستخدم اليوم/الان، وإلا ضعه null.
+- date: استخدم "{$today}" فقط في تقارير المبيعات العامة (sales_report) إذا قصد المستخدم اليوم/الان، وإلا ضعه null.
 - branch: إذا لم يحدد المستخدم فرعاً، استخدم "all".
 - item_name: ضعه null إذا لم يكن الاستعلام عن صنف.
 - party_name: ضعه null إذا لم يكن الاستعلام عن عميل أو مورد.
