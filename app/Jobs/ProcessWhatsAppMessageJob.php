@@ -45,7 +45,7 @@ class ProcessWhatsAppMessageJob implements ShouldQueue
     ) {}
 
     /**
-     * Execute the job.
+     * Execute theي job.
      *
      * @param IntentParsingService $intentParser
      * @param ReportManagerService $reportManager

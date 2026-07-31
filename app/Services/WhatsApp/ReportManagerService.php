@@ -2,7 +2,6 @@
 
 namespace App\Services\WhatsApp;
 
-use App\Models\Account;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -11,246 +10,245 @@ use Throwable;
 class ReportManagerService
 {
     /**
-     * Dynamic connection name for branch queries.
+     * خريطة الربط بين المفاتيح المعيارية للفروع وأسماء الاتصالات في config/database.php
      */
-    protected string $connectionName = 'dynamic_branch';
+    protected array $branchConnections = [
+        'omd'    => 'branch_main',
+        'madani' => 'branch_1',
+        'port1'  => 'branch_2',
+        'port2'  => 'branch_3',
+    ];
 
     /**
-     * Generate report based on parsed intent.
+     * الأسماء المترجمة للفروع للعرض في تقارير الواتساب
+     */
+    protected array $branchLabels = [
+        'omd'    => 'المركز الرئيسي (أمدرمان)',
+        'madani' => 'فرع مدني',
+        'port1'  => 'فرع بورتسودان 1',
+        'port2'  => 'فرع بورتسودان 2',
+    ];
+
+    /**
+     * معالجة النية وإصدار التقرير المناسب بناءً على بيانات الـ JSON
      *
-     * @param array $intentData
+     * @param array $parsedIntent
      * @return string
      */
-    public function generateReport(array $intentData): string
+    public function generateReport(array $parsedIntent): string
     {
-        $intent = $intentData['intent'] ?? 'unknown';
+        $intent = $parsedIntent['intent'] ?? 'unknown';
 
-        if ($intent === 'unknown') {
-            return "❓ لم أتمكن من فهم الطلب بدقة.\n\nيمكنك الاستفسار عن:\n- المبيعات (مثال: مبيعات اليوم، مبيعات الفرع الأول)\n- المخزون (مثال: رصيد صنف X، حد الطلب)\n- الخزينة والمالية (مثال: رصيد الصندوق، المصروفات)";
+        switch ($intent) {
+            case 'sales_report':
+                return $this->getSalesReport($parsedIntent);
+
+            case 'inventory_report':
+                return $this->getInventoryReport($parsedIntent);
+
+            default:
+                return "عذراً، لم أستطع فهم نوع التقرير المطلوب بدقة. يمكنك استعلام المبيعات أو رصيد المخزون بصياغات مثل:\n- مبيعات اليوم لجميع الفروع\n- مبيعات فرع مدني أمس\n- رصيد بنر 130 في بورتسودان 1";
+        }
+    }
+
+    /**
+     * إنتاج تقرير المبيعات للفروع المحددة أو كافة الفروع
+     *
+     * @param array $data
+     * @return string
+     */
+    protected function getSalesReport(array $data): string
+    {
+        $targetBranch = $data['branch'] ?? 'all';
+        $date = $data['date'] ?? now()->format('Y-m-d');
+
+        $connectionsToQuery = [];
+
+        if ($targetBranch === 'all' || ! isset($this->branchConnections[$targetBranch])) {
+            $connectionsToQuery = $this->branchConnections;
+        } else {
+            $connectionsToQuery[$targetBranch] = $this->branchConnections[$targetBranch];
         }
 
-        $targetBranches = $this->resolveTargetBranches($intentData['branches'] ?? ['all']);
-        $period = $intentData['period'] ?? 'today';
-        $dates = $this->resolveDateRange($period, $intentData['start_date'] ?? null, $intentData['end_date'] ?? null);
+        $totalSales = 0.0;
+        $totalInvoices = 0;
+        $totalCash = 0.0;
+        $totalCard = 0.0;
+        $totalCredit = 0.0;
+        $branchSummaries = [];
 
-        $results = [];
-
-        foreach ($targetBranches as $branchLabel => $dbName) {
-            if (empty($dbName)) {
+        foreach ($connectionsToQuery as $key => $connectionName) {
+            if (! Config::get("database.connections.{$connectionName}")) {
+                Log::warning("ReportManagerService: الاتصال {$connectionName} غير معرف في كود الإعدادات.");
                 continue;
             }
 
             try {
-                $branchResult = $this->executeOnBranch($dbName, function () use ($intent, $dates, $intentData) {
-                    return match ($intent) {
-                        'sales_report'     => $this->getSalesReport($dates['start'], $dates['end']),
-                        'inventory_report' => $this->getInventoryReport($intentData['item_name'] ?? null),
-                        'financial_ledger' => $this->getFinancialReport($dates['start'], $dates['end']),
-                        default            => null,
-                    };
-                });
+                $salesData = DB::connection($connectionName)
+                    ->table('invoices')
+                    ->whereDate('created_at', $date)
+                    ->whereNull('deleted_at')
+                    ->selectRaw('
+                        COALESCE(SUM(grand_total), 0) as total_amount,
+                        COUNT(id) as invoice_count,
+                        COALESCE(SUM(paid_cash), 0) as cash_amount,
+                        COALESCE(SUM(paid_card), 0) as card_amount,
+                        COALESCE(SUM(due_amount), 0) as credit_amount
+                    ')
+                    ->first();
 
-                if ($branchResult !== null) {
-                    $results[$branchLabel] = $branchResult;
+                if ($salesData) {
+                    $branchTotal = (float) $salesData->total_amount;
+                    $branchCount = (int) $salesData->invoice_count;
+
+                    $totalSales += $branchTotal;
+                    $totalInvoices += $branchCount;
+                    $totalCash += (float) $salesData->cash_amount;
+                    $totalCard += (float) $salesData->card_amount;
+                    $totalCredit += (float) $salesData->credit_amount;
+
+                    $branchSummaries[] = "• **" . $this->branchLabels[$key] . ":** " . number_format($branchTotal, 2) . " SDG (" . $branchCount . " فاتورة)";
                 }
             } catch (Throwable $e) {
-                Log::error("Failed to query branch database {$dbName}: " . $e->getMessage());
-                $results[$branchLabel] = ['error' => 'تعذر الاتصال بقاعدة بيانات الفرع'];
+                Log::error("ReportManagerService: فشل الاستعلام من الفرع {$key} على الاتصال {$connectionName}: " . $e->getMessage());
+                $branchSummaries[] = "• **" . $this->branchLabels[$key] . ":** ⚠️ يتعذر الاتصال حالياً";
             }
         }
 
-        return $this->formatReportResponse($intent, $results, $dates);
+        $formattedTotalSales = number_format($totalSales, 2);
+        $formattedCash = number_format($totalCash, 2);
+        $formattedCard = number_format($totalCard, 2);
+        $formattedCredit = number_format($totalCredit, 2);
+
+        $responseMessage = "📊 **تقرير المبيعات اليومي**\n";
+        $responseMessage .= "📅 **التاريخ:** {$date}\n";
+        $responseMessage .= "-----------------------------------\n";
+        $responseMessage .= "💵 **إجمالي المبيعات:** {$formattedTotalSales} SDG\n";
+        $responseMessage .= "🧾 **عدد الفواتير:** {$totalInvoices}\n\n";
+        $responseMessage .= "💳 **تفصيل طرق الدفع:**\n";
+        $responseMessage .= "• نقداً (Cash): {$formattedCash} SDG\n";
+        $responseMessage .= "• بنك / شبكة (Card): {$formattedCard} SDG\n";
+        $responseMessage .= "• آجل (Credit): {$formattedCredit} SDG\n";
+        $responseMessage .= "-----------------------------------\n";
+        $responseMessage .= "🏢 **تفاصيل الفروع:**\n";
+        $responseMessage .= implode("\n", $branchSummaries);
+
+        return $responseMessage;
     }
 
     /**
-     * Resolve branch databases from environment variables.
+     * إنتاج تقرير المخزون مع تطبيق البحث الضبابي والتطبيع اللغوي العربي
+     *
+     * @param array $data
+     * @return string
      */
-    protected function resolveTargetBranches(array $requestedBranches): array
+    protected function getInventoryReport(array $data): string
     {
-        $allBranches = [
-            'الرئيسي'  => env('BRANCH_DB_MAIN'),
-            'الفرع 1'  => env('BRANCH_DB_1'),
-            'الفرع 2'  => env('BRANCH_DB_2'),
-            'الفرع 3'  => env('BRANCH_DB_3'),
-        ];
+        $rawItemName = $data['item_name'] ?? '';
 
-        if (in_array('all', $requestedBranches, true)) {
-            return array_filter($allBranches);
+        if (empty($rawItemName)) {
+            return "⚠️ الرجاء تحديد اسم الصنف المراد الاستعلام عنه (مثال: رصيد بنر 130).";
         }
 
-        $mapped = [];
-        $branchMap = [
-            'main'     => 'الرئيسي',
-            'branch_1' => 'الفرع 1',
-            'branch_2' => 'الفرع 2',
-            'branch_3' => 'الفرع 3',
-        ];
+        $normalizedSearch = $this->normalizeArabic($rawItemName);
 
-        foreach ($requestedBranches as $branchCode) {
-            if (isset($branchMap[$branchCode]) && !empty($allBranches[$branchMap[$branchCode]])) {
-                $label = $branchMap[$branchCode];
-                $mapped[$label] = $allBranches[$label];
+        $targetBranch = $data['branch'] ?? 'all';
+        $connectionsToQuery = [];
+
+        if ($targetBranch === 'all' || ! isset($this->branchConnections[$targetBranch])) {
+            $connectionsToQuery = $this->branchConnections;
+        } else {
+            $connectionsToQuery[$targetBranch] = $this->branchConnections[$targetBranch];
+        }
+
+        $resultsFound = false;
+        $responseMessage = "📦 **تقرير مخزون الأصناف**\n";
+        $responseMessage .= "🔍 البحث عن: **{$rawItemName}**\n";
+        $responseMessage .= "-----------------------------------\n";
+
+        foreach ($connectionsToQuery as $key => $connectionName) {
+            if (! Config::get("database.connections.{$connectionName}")) {
+                continue;
+            }
+
+            try {
+                // تطبيق التطبيع على مستوى الاستعلام لمنع تعارض الهمزات والياءات
+                $items = DB::connection($connectionName)
+                    ->table('items')
+                    ->join('item_stocks', 'items.id', '=', 'item_stocks.item_id')
+                    ->join('stores', 'item_stocks.store_id', '=', 'stores.id')
+                    ->whereNull('items.deleted_at')
+                    ->whereRaw("
+                        LOWER(
+                            REPLACE(
+                                REPLACE(
+                                    REPLACE(
+                                        REPLACE(
+                                            REPLACE(items.name, 'أ', 'ا'),
+                                        'إ', 'ا'),
+                                    'آ', 'ا'),
+                                'ى', 'ي'),
+                            'ة', 'ه')
+                        ) LIKE ?", ["%{$normalizedSearch}%"])
+                    ->select(
+                        'items.name as item_name',
+                        'items.code as item_code',
+                        'stores.name as store_name',
+                        'item_stocks.quantity as quantity'
+                    )
+                    ->get();
+
+                if ($items->isNotEmpty()) {
+                    $resultsFound = true;
+                    $responseMessage .= "🏢 **{$this->branchLabels[$key]}**\n";
+
+                    $groupedItems = $items->groupBy('item_code');
+
+                    foreach ($groupedItems as $code => $stocks) {
+                        $itemName = $stocks->first()->item_name;
+                        $totalQty = $stocks->sum('quantity');
+
+                        $responseMessage .= "🔹 **{$itemName}** (كود: {$code})\n";
+                        $responseMessage .= "   إجمالي الرصيد: **" . number_format($totalQty, 2) . "**\n";
+
+                        foreach ($stocks as $stock) {
+                            $responseMessage .= "   └ {$stock->store_name}: " . number_format($stock->quantity, 2) . "\n";
+                        }
+                    }
+                    $responseMessage .= "-----------------------------------\n";
+                }
+            } catch (Throwable $e) {
+                Log::error("ReportManagerService: فشل استعلام المخزون في الفرع {$key}: " . $e->getMessage());
             }
         }
 
-        return !empty($mapped) ? $mapped : array_filter($allBranches);
-    }
-
-    /**
-     * Execute a callback query on a dynamic database connection.
-     */
-    protected function executeOnBranch(string $dbName, callable $callback)
-    {
-        Config::set("database.connections.{$this->connectionName}", array_merge(
-            config('database.connections.mysql'),
-            ['database' => $dbName]
-        ));
-
-        DB::purge($this->connectionName);
-
-        return $callback();
-    }
-
-    /**
-     * Query sales data using actual `sales` table structure.
-     */
-    protected function getSalesReport(string $startDate, string $endDate): array
-    {
-        $query = DB::connection($this->connectionName)
-            ->table('sales')
-            ->whereNull('deleted_at')
-            ->where('invoice_type', 'sale') // فلترة الفواتير الصريحة واستبعاد المرتجعات
-            ->whereBetween(DB::raw('DATE(invoice_date)'), [$startDate, $endDate]);
-
-        return [
-            'total_amount'   => (float) $query->sum('grand_total'),
-            'invoices_count' => (int) $query->count(),
-        ];
-    }
-
-    /**
-     * Query inventory data using actual `item_stocks` and `items` joined structure.
-     */
-    protected function getInventoryReport(?string $itemName): array
-    {
-        $query = DB::connection($this->connectionName)
-            ->table('item_stocks')
-            ->join('items', 'items.id', '=', 'item_stocks.item_id')
-            ->whereNull('items.deleted_at');
-
-        if (!empty($itemName)) {
-            $query->where('items.name', 'LIKE', "%{$itemName}%");
+        if (! $resultsFound) {
+            return "❌ لم يتم العثور على أي نتائج تطابق الصنف (**{$rawItemName}**) في الفروع المحددة.";
         }
 
-        $items = $query->select(
-            'items.name as item_name',
-            'item_stocks.current_quantity',
-            'item_stocks.reorder_level'
-        )
-        ->limit(10)
-        ->get();
-
-        return [
-            'items' => $items->toArray(),
-        ];
+        return $responseMessage;
     }
 
     /**
-     * Query financial balances from `accounts` & `treasuries` / `expenses`.
+     * تطبيع النص العربي لتسهيل البحث (إزالة التشكيل، توحيد الهمزات، الياء، والتاء المربوطة)
+     *
+     * @param string $text
+     * @return string
      */
-    protected function getFinancialReport(string $startDate, string $endDate): array
+    protected function normalizeArabic(string $text): string
     {
-        // 1. جلب رصيد الخزائن من جدول الخزائن أو شجرة الحسابات (Code: 1101)
-        $treasuryBalance = (float) DB::connection($this->connectionName)
-            ->table('accounts')
-            ->where('code', Account::CODE_TREASURY)
-            ->value('current_balance') ?? 0.0;
+        // 1. إزالة التشكيل بالحركات (فتحة، ضمة، كسرة، تنوين، شدة، سكون)
+        $text = preg_replace('/[\x{064B}-\x{0652}\x{0640}]/u', '', $text);
 
-        // 2. جلب إجمالي المصروفات من جدول المصروفات خلال الفيلتر الزمني
-        $expensesTotal = (float) DB::connection($this->connectionName)
-            ->table('expenses')
-            ->whereNull('deleted_at')
-            ->whereBetween(DB::raw('DATE(created_at)'), [$startDate, $endDate])
-            ->sum('amount');
+        // 2. توحيد أشكال الهمزات إلى ألف مجردة (أ، إ، آ -> ا)
+        $text = preg_replace('/[أإآ]/u', 'ا', $text);
 
-        return [
-            'treasury_balance' => $treasuryBalance,
-            'total_expenses'   => $expensesTotal,
-        ];
-    }
+        // 3. توحيد الألف المقصورة والياء في نهاية الكلمة (ى -> ي)
+        $text = preg_replace('/ى/u', 'ي', $text);
 
-    /**
-     * Resolve start and end dates based on period string.
-     */
-    protected function resolveDateRange(string $period, ?string $start, ?string $end): array
-    {
-        $today = date('Y-m-d');
+        // 4. توحيد التاء المربوطة والهاء في نهاية الكلمة (ة -> ه)
+        $text = preg_replace('/ة/u', 'ه', $text);
 
-        return match ($period) {
-            'yesterday'  => ['start' => date('Y-m-d', strtotime('-1 day')), 'end' => date('Y-m-d', strtotime('-1 day'))],
-            'this_month' => ['start' => date('Y-m-01'), 'end' => $today],
-            'custom'     => ['start' => $start ?? $today, 'end' => $end ?? $today],
-            default      => ['start' => $today, 'end' => $today],
-        };
-    }
-
-    /**
-     * Format aggregated database results into structured WhatsApp markdown.
-     */
-    protected function formatReportResponse(string $intent, array $results, array $dates): string
-    {
-        $dateText = ($dates['start'] === $dates['end']) ? $dates['start'] : "من {$dates['start']} إلى {$dates['end']}";
-        $output = "";
-
-        if ($intent === 'sales_report') {
-            $output .= "📊 *تقرير المبيعات ({$dateText})*\n\n";
-            $grandTotal = 0;
-            $grandCount = 0;
-
-            foreach ($results as $branch => $data) {
-                if (isset($data['error'])) {
-                    $output .= "🔹 *{$branch}*: ⚠️ {$data['error']}\n";
-                    continue;
-                }
-                $amount = number_format($data['total_amount'], 2);
-                $output .= "🔹 *{$branch}*: {$amount} | عدد الفواتير: {$data['invoices_count']}\n";
-                $grandTotal += $data['total_amount'];
-                $grandCount += $data['invoices_count'];
-            }
-
-            $formattedGrand = number_format($grandTotal, 2);
-            $output .= "\n📈 *الإجمالي الكلي*: {$formattedGrand} (إجمالي الفواتير: {$grandCount})";
-        } elseif ($intent === 'inventory_report') {
-            $output .= "📦 *تقرير المخزون*\n\n";
-
-            foreach ($results as $branch => $data) {
-                $output .= "🏢 *{$branch}*:\n";
-                if (isset($data['error'])) {
-                    $output .= "  ⚠️ {$data['error']}\n";
-                    continue;
-                }
-                if (empty($data['items'])) {
-                    $output .= "  لا توجد أصناف مطابقة.\n";
-                    continue;
-                }
-                foreach ($data['items'] as $item) {
-                    $output .= "  - {$item->item_name}: الكمية الحالية ({$item->current_quantity}) | حد الطلب ({$item->reorder_level})\n";
-                }
-            }
-        } elseif ($intent === 'financial_ledger') {
-            $output .= "💰 *التقرير المالي والخزينة ({$dateText})*\n\n";
-
-            foreach ($results as $branch => $data) {
-                if (isset($data['error'])) {
-                    $output .= "🔹 *{$branch}*: ⚠️ {$data['error']}\n";
-                    continue;
-                }
-                $balance = number_format($data['treasury_balance'], 2);
-                $expenses = number_format($data['total_expenses'], 2);
-                $output .= "🔹 *{$branch}*:\n  • رصيد الخزينة: {$balance}\n  • إجمالي المصروفات: {$expenses}\n";
-            }
-        }
-
-        return $output;
+        return trim(mb_strtolower($text));
     }
 }
