@@ -2,6 +2,7 @@
 
 namespace App\Services\WhatsApp;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -9,40 +10,50 @@ use Throwable;
 class IntentParsingService
 {
     /**
-     * تحليل نية النص الوارد من الواتساب مع تسجيل التفاصيل في اللوغ
+     * تحليل نية النص الوارد من الواتساب وتحويله إلى كائن JSON مفسر.
+     *
+     * @param string $userMessage
+     * @param string $phoneNumber
+     * @return array|null
      */
     public function parseIntent(string $userMessage, string $phoneNumber): ?array
     {
-        Log::info(" [WA-IntentParsing] بدء تحليل رسالة جديدة", [
-            'phone'   => $phoneNumber,
-            'message' => $userMessage,
-        ]);
-
+        // 1. تنظيف وتقليم النص
         $cleanedMessage = $this->sanitizeInput($userMessage);
 
         if (empty($cleanedMessage)) {
-            Log::warning("⚠️ [WA-IntentParsing] النص فارغ بعد التنظيف");
             return null;
         }
 
-        $result = $this->executeAiInference($cleanedMessage);
+        // 2. منع التكرار اللحظي (Deduplication Lock) لمدة 5 ثوانٍ
+        $lockKey = 'wa_lock_' . $phoneNumber . '_' . md5($cleanedMessage);
 
-        Log::info(" [WA-IntentParsing] نتيجة تحليل النية من DeepSeek", [
-            'phone'  => $phoneNumber,
-            'result' => $result,
-        ]);
+        if (! Cache::lock($lockKey, 5)->get()) {
+            Log::info("IntentParsingService: تم تجاهل الطلب المكرر اللحظي من الرقم {$phoneNumber}");
+            return null;
+        }
 
-        return $result;
+        // 3. تخزين نتيجة النية في الكاش (Caching) لمدة 10 دقائق لتوفير التوكينات
+        $cacheKey = 'intent_' . md5($cleanedMessage);
+
+        return Cache::remember($cacheKey, now()->addMinutes(10), function () use ($cleanedMessage) {
+            return $this->executeAiInference($cleanedMessage);
+        });
     }
 
-    /**
-     * الاتصال المباشر بـ DeepSeek API
+
+/**
+     * الاتصال المباشر بـ DeepSeek API بأسلوب Stateless
+     *
+     * @param string $message
+     * @return array|null
      */
     protected function executeAiInference(string $message): ?array
     {
-        $apiKey  = config('services.deepseek.key');
+        $apiKey = config('services.deepseek.key');
         $baseUrl = config('services.deepseek.url', 'https://api.deepseek.com');
 
+        // ضمان عدم تكرار chat/completions في الرابط
         $endpoint = str_contains($baseUrl, 'chat/completions')
             ? $baseUrl
             : rtrim($baseUrl, '/') . '/chat/completions';
@@ -50,19 +61,17 @@ class IntentParsingService
         $systemPrompt = $this->buildSystemPrompt();
 
         try {
-            Log::info(" [WA-IntentParsing] جاري إرسال الطلب لـ DeepSeek API");
-
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $apiKey,
-                'Content-Type'  => 'application/json',
+                'Content-Type' => 'application/json',
             ])->timeout(15)->post($endpoint, [
-                'model'           => 'deepseek-chat',
-                'messages'        => [
+                'model' => 'deepseek-chat',
+                'messages' => [
                     ['role' => 'system', 'content' => $systemPrompt],
                     ['role' => 'user', 'content' => $message],
                 ],
-                'temperature'     => 0.1,
-                'max_tokens'      => 150,
+                'temperature' => 0.1,
+                'max_tokens' => 150,
                 'response_format' => ['type' => 'json_object'],
             ]);
 
@@ -71,36 +80,24 @@ class IntentParsingService
                 return json_decode($content, true);
             }
 
-            Log::error('❌ [WA-IntentParsing] فشل استجابة DeepSeek API', [
-                'status' => $response->status(),
-                'body'   => $response->body(),
-            ]);
+            Log::error('DeepSeek API Error: ' . $response->body());
             return null;
 
         } catch (Throwable $e) {
-            Log::error('❌ [WA-IntentParsing] استثناء أثناء الاتصال بـ DeepSeek', [
-                'error' => $e->getMessage(),
-            ]);
+            Log::error('DeepSeek Connection Exception: ' . $e->getMessage());
             return null;
         }
     }
 
     /**
-     * بناء الـ System Prompt الديناميكي
+     * بناء الـ System Prompt المصغر والدقيق لمعالجة التواريخ والأسماء المستعارة والتطبيع اللغوي
+     *
+     * @return string
      */
     protected function buildSystemPrompt(): string
     {
-        $today   = now()->format('Y-m-d');
+        $today = now()->format('Y-m-d');
         $dayName = now()->locale('ar')->isoFormat('dddd');
-
-        $registry = app(QueryHandlerRegistry::class);
-        $handlers = $registry->getRegisteredHandlers();
-
-        $intentsDocumentation = "";
-        foreach ($handlers as $handler) {
-            $intentsDocumentation .= "- \"{$handler->getIntentName()}\": {$handler->getDescription()}\n";
-        }
-        $intentsDocumentation .= "- \"unknown\": إذا كان الطلب غير واضح أو غير مرتبط بنظام ERP.";
 
         return <<<PROMPT
 أنت محرك تحليل نيات (ERP Intent Parser). مهمتك إرجاع كائن JSON فقط يحتوي حتماً على المفاتيح: "intent", "branch", "date", "item_name".
@@ -109,8 +106,10 @@ class IntentParsingService
 - تاريخ اليوم: {$today}
 - اليوم هو: {$dayName}
 
-النيات المتاحة حالياً في النظام (Intents):
-{$intentsDocumentation}
+النيات المتاحة (Intents):
+- "sales_report": عند طلب المبيعات، الإيرادات، الكاش، أو عدد الفواتير.
+- "inventory_report": عند الاستعلام عن رصيد مخزون، كمية صنف، أو توفر بضاعة.
+- "unknown": إذا كان الطلب غير واضح أو غير مرتبط بنظام ERP.
 
 خريطة الفروع والأسماء المستعارة (Branch Mapping):
 - "omd": المركز الرئيسي, امدرمان, الفرع الرئيسي, ورشة امدرمان, omdurman
@@ -145,6 +144,12 @@ class IntentParsingService
 PROMPT;
     }
 
+    /**
+     * تنظيف المدخلات وتقليم المسافات والأحرف الزائدة
+     *
+     * @param string $text
+     * @return string
+     */
     protected function sanitizeInput(string $text): string
     {
         $text = preg_replace('/\s+/u', ' ', $text);
