@@ -3,214 +3,207 @@
 namespace App\Services\WhatsApp\Handlers;
 
 use App\Services\WhatsApp\Contracts\QueryHandlerInterface;
-use App\Models\Customer;
-use App\Models\Supplier;
+use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Collection;
+use Throwable;
 
 class PartyBalanceQueryHandler implements QueryHandlerInterface
 {
     /**
-     * اسم النية الفريدة التي يعالجها الكلاس
+     * ربط مفاتيح الفروع بأسماء اتصالات قاعدة البيانات
      */
+    protected array $branchConnections = [
+        'omd'    => 'branch_main',
+        'madani' => 'branch_1',
+        'port1'  => 'branch_2',
+        'port2'  => 'branch_3',
+    ];
+
+    /**
+     * الأسماء المترجمة للفروع للعرض على الواتساب
+     */
+    protected array $branchLabels = [
+        'omd'    => 'المركز الرئيسي (أمدرمان)',
+        'madani' => 'فرع مدني',
+        'port1'  => 'فرع بورتسودان 1',
+        'port2'  => 'فرع بورتسودان 2',
+    ];
+
     public function getIntentName(): string
     {
         return 'party_balance';
     }
 
-    /**
-     * وصف دقيق وموجز للنية يُحقن تلقائياً في الـ System Prompt الخاص بالذكاء الاصطناعي
-     */
     public function getDescription(): string
     {
-        return 'استعلام عن رصيد حساب عميل أو مورد (مثل: رصيد شركة البركة، كم على العميل أحمد، كم للمورد علي)';
+        return 'استعلام عن رصيد حساب عميل أو مورد (مثال: رصيد العميل هيثم، حساب المورد شركة البركة)';
     }
 
-    /**
-     * تنفيذ الاستعلام وإعادة نص الرد البسيط والمباشر للواتساب
-     *
-     * @param array $parsedIntent
-     * @return string
-     */
     public function handle(array $parsedIntent): string
     {
-        $partyName = trim($parsedIntent['party_name'] ?? '');
-        $partyType = strtolower(trim($parsedIntent['party_type'] ?? 'all'));
-        $branchConnections = $parsedIntent['branch_connections'] ?? ['branch_main'];
+        $search = trim($parsedIntent['party_name'] ?? $parsedIntent['search'] ?? '');
+        $partyType = $parsedIntent['party_type'] ?? 'all'; // customer, supplier, or all
+        $targetBranch = $parsedIntent['branch'] ?? 'all';
 
-        if (empty($partyName)) {
+        if (empty($search)) {
             return "⚠️ يرجى تحديد اسم العميل أو المورد للاستعلام عن الرصيد.";
         }
 
+        $connectionsToQuery = [];
+        if ($targetBranch === 'all' || !isset($this->branchConnections[$targetBranch])) {
+            $connectionsToQuery = $this->branchConnections;
+        } else {
+            $connectionsToQuery[$targetBranch] = $this->branchConnections[$targetBranch];
+        }
+
+        $normalizedSearch = $this->normalizeArabic($search);
         $results = collect();
 
-        foreach ($branchConnections as $connection) {
-            $branchResults = $this->searchInBranch($connection, $partyName, $partyType);
-            if (!empty($branchResults['items']) && $branchResults['items']->isNotEmpty()) {
-                $results->put($connection, $branchResults);
+        foreach ($connectionsToQuery as $branchKey => $connectionName) {
+            if (!Config::get("database.connections.{$connectionName}")) {
+                continue;
+            }
+
+            try {
+                $branchResults = $this->searchInBranch($connectionName, $search, $normalizedSearch, $partyType);
+                if (!empty($branchResults['parties']) && $branchResults['parties']->isNotEmpty()) {
+                    $results->put($branchKey, $branchResults);
+                }
+            } catch (Throwable $e) {
+                Log::error("PartyBalanceQueryHandler Error [{$branchKey}]: " . $e->getMessage());
             }
         }
 
-       if ($results->isEmpty()) {
-    return "❌ *لم نجد أي عميل أو مورد يطابق*: \"{$partyName}\"\n\n"
-         . "💡 *نصائح للوصول لنتيجة دقيقة:*\n"
-         . "• جرب البحث برقم الهاتف أو كود الحساب (مثال: `رصيد 0912345678`).\n"
-         . "• تأكد من كتابة الاسم بدون أخطاء إملائية أو اختصارات.\n"
-         . "• اكتب كلمة واحدة من اسم العميل بدلاً من الاسم الكامل.\n\n"
-         . "📌 *استعلامات أخرى يمكنك تجربتها:*\n"
-         . "• `مبيعات اليوم` | `رصيد بنر 130`";
-}
+        if ($results->isEmpty()) {
+            $branchNotice = ($targetBranch !== 'all' && isset($this->branchLabels[$targetBranch]))
+                ? " في *{$this->branchLabels[$targetBranch]}*"
+                : "";
 
-        return $this->formatWhatsAppReport($partyName, $results);
+            return "❌ *لم نجد أي حساب يطابق*: \"{$search}\"{$branchNotice}\n\n"
+                 . "💡 *نصائح للوصول لنتيجة دقيقة:*\n"
+                 . "• اكتب الاسم أو جزءاً منه (مثال: `هيثم`).\n"
+                 . "• تأكد من اختيار الفرع الصحيح.\n\n"
+                 . "📌 *استعلامات أخرى يمكنك تجربتها:*\n"
+                 . "• `رصيد شركة الأمل` | `مبيعات اليوم`";
+        }
+
+        return $this->formatWhatsAppReport($search, $results, $targetBranch);
     }
 
     /**
-     * البحث في قاعدة بيانات فرع محدد عن العميل أو المورد مع الترتيب والحد الأقصى
+     * البحث في قاعدة بيانات الفرع عن العملاء والموردين
      */
-    protected function searchInBranch(string $connection, string $search, string $partyType): array
+    protected function searchInBranch(string $connection, string $rawSearch, string $normalizedSearch, string $partyType): array
     {
-        $maxResults = 4;
-        $found = collect();
-        $totalMatches = 0;
+        $maxResults = 5;
+        $foundParties = collect();
 
-        $isNumericSearch = is_numeric($search);
+        // 1. البحث في جدول العملاء Customers
+        if (in_array($partyType, ['all', 'customer'])) {
+            $customers = DB::connection($connection)
+                ->table('customers')
+                ->whereNull('deleted_at')
+                ->where(function ($q) use ($rawSearch, $normalizedSearch) {
+                    $q->where('name', 'like', "%{$rawSearch}%")
+                      ->orWhere('phone', 'like', "%{$rawSearch}%")
+                      ->orWhereRaw("
+                            LOWER(
+                                REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(name, 'أ', 'ا'), 'إ', 'ا'), 'آ', 'ا'), 'ى', 'ي'), 'ة', 'ه')
+                            ) LIKE ?", ["%{$normalizedSearch}%"]);
+                })
+                ->take($maxResults)
+                ->get()
+                ->map(function ($c) {
+                    return [
+                        'name'    => $c->name,
+                        'type'    => 'عميل',
+                        'balance' => (float) ($c->current_balance ?? $c->balance ?? 0),
+                    ];
+                });
 
-        // 1. البحث في العملاء
-        if (in_array($partyType, ['customer', 'all'])) {
-            $customerQuery = Customer::on($connection);
-
-            if ($isNumericSearch) {
-                $customerQuery->where('phone', 'like', "%{$search}%")
-                              ->orWhere('code', 'like', "%{$search}%");
-            } else {
-                $customerQuery->where(function ($q) use ($search) {
-                    $q->where('name', 'like', "%{$search}%")
-                      ->orWhere('code', 'like', "%{$search}%")
-                      ->orWhere('phone', 'like', "%{$search}%");
-                })->orderByRaw("
-                    CASE
-                        WHEN name = ? THEN 1
-                        WHEN name LIKE ? THEN 2
-                        ELSE 3
-                    END
-                ", [$search, "{$search}%"]);
-            }
-
-            $totalMatches += $customerQuery->count();
-            $customers = $customerQuery->take($maxResults)->get();
-
-            foreach ($customers as $customer) {
-                $found->push([
-                    'type'       => 'customer',
-                    'type_label' => 'عميل',
-                    'name'       => $customer->name,
-                    'code'       => $customer->code ?? 'N/A',
-                    'phone'      => $customer->phone ?? 'N/A',
-                    'balance'    => (float) $customer->current_balance,
-                ]);
-            }
+            $foundParties = $foundParties->concat($customers);
         }
 
-        // 2. البحث في الموردين
-        if (in_array($partyType, ['supplier', 'all'])) {
-            $supplierQuery = Supplier::on($connection);
+        // 2. البحث في جدول الموردين Suppliers
+        if (in_array($partyType, ['all', 'supplier']) && $foundParties->count() < $maxResults) {
+            $suppliers = DB::connection($connection)
+                ->table('suppliers')
+                ->whereNull('deleted_at')
+                ->where(function ($q) use ($rawSearch, $normalizedSearch) {
+                    $q->where('name', 'like', "%{$rawSearch}%")
+                      ->orWhere('phone', 'like', "%{$rawSearch}%")
+                      ->orWhereRaw("
+                            LOWER(
+                                REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(name, 'أ', 'ا'), 'إ', 'ا'), 'آ', 'ا'), 'ى', 'ي'), 'ة', 'ه')
+                            ) LIKE ?", ["%{$normalizedSearch}%"]);
+                })
+                ->take($maxResults - $foundParties->count())
+                ->get()
+                ->map(function ($s) {
+                    return [
+                        'name'    => $s->name,
+                        'type'    => 'مورد',
+                        'balance' => (float) ($s->current_balance ?? $s->balance ?? 0),
+                    ];
+                });
 
-            if ($isNumericSearch) {
-                $supplierQuery->where('phone', 'like', "%{$search}%")
-                              ->orWhere('code', 'like', "%{$search}%");
-            } else {
-                $supplierQuery->where(function ($q) use ($search) {
-                    $q->where('name', 'like', "%{$search}%")
-                      ->orWhere('code', 'like', "%{$search}%")
-                      ->orWhere('phone', 'like', "%{$search}%");
-                })->orderByRaw("
-                    CASE
-                        WHEN name = ? THEN 1
-                        WHEN name LIKE ? THEN 2
-                        ELSE 3
-                    END
-                ", [$search, "{$search}%"]);
-            }
-
-            $totalMatches += $supplierQuery->count();
-            $suppliers = $supplierQuery->take($maxResults)->get();
-
-            foreach ($suppliers as $supplier) {
-                $found->push([
-                    'type'       => 'supplier',
-                    'type_label' => 'مورد',
-                    'name'       => $supplier->name,
-                    'code'       => $supplier->code ?? 'N/A',
-                    'phone'      => $supplier->phone ?? 'N/A',
-                    'balance'    => (float) $supplier->current_balance,
-                ]);
-            }
+            $foundParties = $foundParties->concat($suppliers);
         }
-
-        // تحديد أعلى N نتائج إجمالية فقط لكل فرع
-        $limitedItems = $found->take($maxResults);
 
         return [
-            'total_count' => $totalMatches,
-            'has_more'    => $totalMatches > $maxResults,
-            'items'       => $limitedItems,
+            'total_count' => $foundParties->count(),
+            'parties'     => $foundParties,
         ];
     }
 
     /**
-     * تنسيق مخرجات التقارير لشاشة الواتساب بطريقة موجزة ومحاسبية دقيقة
+     * تنسيق التقرير النهائي لشاشة الواتساب
      */
-    protected function formatWhatsAppReport(string $search, Collection $results): string
+    protected function formatWhatsAppReport(string $search, Collection $results, string $targetBranch): string
     {
-        $output = "📊 *تقرير أرصدة الحسابات*: _{$search}_\n";
+        $output = "👤 *رصيد حساب*: _{$search}_\n";
         $output .= "-----------------------------------\n";
 
-        $totalMoreParties = 0;
+        foreach ($results as $branchKey => $branchData) {
+            $label = $this->branchLabels[$branchKey] ?? $branchKey;
+            $output .= "🏢 *الفرع*: {$label}\n";
 
-        foreach ($results as $branch => $branchData) {
-            $branchLabel = ucfirst(str_replace(['branch_', '_'], ['', ' '], $branch));
-            $output .= "🏢 *الفرع*: {$branchLabel}\n";
+            foreach ($branchData['parties'] as $party) {
+                $balance = $party['balance'];
+                $formattedBalance = number_format(abs($balance), 0) . " SDG";
 
-            $items = $branchData['items'];
-            foreach ($items as $item) {
-                $balance = $item['balance'];
-                $absBalance = number_format(abs($balance), 2);
-
-                if ($item['type'] === 'customer') {
-                    if ($balance > 0) {
-                        $status = "🔴 *عليه*: {$absBalance}";
-                    } elseif ($balance < 0) {
-                        $status = "🟢 *له*: {$absBalance}";
-                    } else {
-                        $status = "⚪ *خالي من الديون*: 0.00";
-                    }
+                // تحديد حالة الرصيد (له / عليه)
+                $status = "";
+                if ($balance > 0) {
+                    $status = " (عليه / مدين)";
+                } elseif ($balance < 0) {
+                    $status = " (له / دائن)";
                 } else {
-                    if ($balance > 0) {
-                        $status = "🔴 *له*: {$absBalance}";
-                    } elseif ($balance < 0) {
-                        $status = "🟢 *عليه*: {$absBalance}";
-                    } else {
-                        $status = "⚪ *خالي من الديون*: 0.00";
-                    }
+                    $status = " (خالي الرصيد)";
                 }
 
-                $output .= "• [{$item['type_label']}] *{$item['name']}*\n";
-                $output .= "  └ الرصيد: {$status}\n";
-            }
-
-            if (!empty($branchData['has_more'])) {
-                $moreInBranch = $branchData['total_count'] - $items->count();
-                $totalMoreParties += $moreInBranch;
+                $output .= "🔹 *{$party['name']}* ({$party['type']})\n";
+                $output .= "  └ الرصيد الحالي: *{$formattedBalance}*{$status}\n";
             }
 
             $output .= "\n";
         }
 
-        if ($totalMoreParties > 0) {
-            $output .= "-----------------------------------\n";
-            $output .= "💡 *ملاحظة*: توجد *{$totalMoreParties} حسابات أخرى* تطابق كلمة \"{$search}\".\n";
-            $output .= "لتحديد الحساب بقة، يرجى كتابة (الاسم كاملاً)، أو (رقم كود الحساب)، أو (رقم الهاتف).\n";
-        }
-
         return trim($output);
+    }
+
+    /**
+     * تطبيع النصوص العربية
+     */
+    protected function normalizeArabic(string $text): string
+    {
+        $text = preg_replace('/[\x{064B}-\x{0652}\x{0640}]/u', '', $text);
+        $text = preg_replace('/[أإآ]/u', 'ا', $text);
+        $text = preg_replace('/ى/u', 'ي', $text);
+        $text = preg_replace('/ة/u', 'ه', $text);
+
+        return trim(mb_strtolower($text));
     }
 }
