@@ -45,7 +45,7 @@ class ProcessWhatsAppMessageJob implements ShouldQueue
     ) {}
 
     /**
-     * Execute theي job.
+     * Execute the job.
      *
      * @param IntentParsingService $intentParser
      * @param ReportManagerService $reportManager
@@ -59,7 +59,7 @@ class ProcessWhatsAppMessageJob implements ShouldQueue
     ): void {
         try {
             // 1. تحليل النية واستخراج المقاصد عبر DeepSeek
-            $parsedIntent = $intentParser->parse($this->messageText);
+            $parsedIntent = $intentParser->parseIntent($this->messageText, $this->senderPhone);
 
             // 2. استعلام قاعدة البيانات وتوليد التقرير المطلوب
             $reportResult = $reportManager->generateReport($parsedIntent);
