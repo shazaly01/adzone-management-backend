@@ -18,14 +18,13 @@ class IntentParsingService
      */
     public function parseIntent(string $userMessage, string $phoneNumber): ?array
     {
-        // 1. تنظيف وتقليم النص
         $cleanedMessage = $this->sanitizeInput($userMessage);
 
         if (empty($cleanedMessage)) {
             return null;
         }
 
-        // 2. منع التكرار اللحظي (Deduplication Lock) لمدة 5 ثوانٍ
+        // منع التكرار اللحظي (Deduplication Lock) لمدة 5 ثوانٍ
         $lockKey = 'wa_lock_' . $phoneNumber . '_' . md5($cleanedMessage);
 
         if (! Cache::lock($lockKey, 5)->get()) {
@@ -33,7 +32,7 @@ class IntentParsingService
             return null;
         }
 
-        // 3. تخزين نتيجة النية في الكاش (Caching) لمدة 10 دقائق لتوفير التوكينات
+        // تخزين نتيجة النية في الكاش لمدة 10 دقائق
         $cacheKey = 'intent_' . md5($cleanedMessage);
 
         return Cache::remember($cacheKey, now()->addMinutes(10), function () use ($cleanedMessage) {
@@ -41,7 +40,7 @@ class IntentParsingService
         });
     }
 
-/**
+    /**
      * الاتصال المباشر بـ DeepSeek API بأسلوب Stateless
      *
      * @param string $message
@@ -49,10 +48,9 @@ class IntentParsingService
      */
     protected function executeAiInference(string $message): ?array
     {
-        $apiKey = config('services.deepseek.key');
+        $apiKey  = config('services.deepseek.key');
         $baseUrl = config('services.deepseek.url', 'https://api.deepseek.com');
 
-        // ضمان عدم تكرار chat/completions في الرابط
         $endpoint = str_contains($baseUrl, 'chat/completions')
             ? $baseUrl
             : rtrim($baseUrl, '/') . '/chat/completions';
@@ -62,15 +60,15 @@ class IntentParsingService
         try {
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $apiKey,
-                'Content-Type' => 'application/json',
+                'Content-Type'  => 'application/json',
             ])->timeout(15)->post($endpoint, [
-                'model' => 'deepseek-chat',
-                'messages' => [
+                'model'           => 'deepseek-chat',
+                'messages'        => [
                     ['role' => 'system', 'content' => $systemPrompt],
                     ['role' => 'user', 'content' => $message],
                 ],
-                'temperature' => 0.1,
-                'max_tokens' => 150,
+                'temperature'     => 0.1,
+                'max_tokens'      => 150,
                 'response_format' => ['type' => 'json_object'],
             ]);
 
@@ -89,14 +87,24 @@ class IntentParsingService
     }
 
     /**
-     * بناء الـ System Prompt المصغر والدقيق لمعالجة التواريخ والأسماء المستعارة والتطبيع اللغوي
+     * بناء الـ System Prompt الديناميكي عبر استقراء النيات المسجلة في الـ Registry
      *
      * @return string
      */
     protected function buildSystemPrompt(): string
     {
-        $today = now()->format('Y-m-d');
+        $today   = now()->format('Y-m-d');
         $dayName = now()->locale('ar')->isoFormat('dddd');
+
+        // جلب النيات المسجلة حالياً في النظام ديناميكياً
+        $registry = app(QueryHandlerRegistry::class);
+        $handlers = $registry->getRegisteredHandlers();
+
+        $intentsDocumentation = "";
+        foreach ($handlers as $handler) {
+            $intentsDocumentation .= "- \"{$handler->getIntentName()}\": {$handler->getDescription()}\n";
+        }
+        $intentsDocumentation .= "- \"unknown\": إذا كان الطلب غير واضح أو غير مرتبط بنظام ERP.";
 
         return <<<PROMPT
 أنت محرك تحليل نيات (ERP Intent Parser). مهمتك إرجاع كائن JSON فقط يحتوي حتماً على المفاتيح: "intent", "branch", "date", "item_name".
@@ -105,10 +113,8 @@ class IntentParsingService
 - تاريخ اليوم: {$today}
 - اليوم هو: {$dayName}
 
-النيات المتاحة (Intents):
-- "sales_report": عند طلب المبيعات، الإيرادات، الكاش، أو عدد الفواتير.
-- "inventory_report": عند الاستعلام عن رصيد مخزون، كمية صنف، أو توفر بضاعة.
-- "unknown": إذا كان الطلب غير واضح أو غير مرتبط بنظام ERP.
+النيات المتاحة حالياً في النظام (Intents):
+{$intentsDocumentation}
 
 خريطة الفروع والأسماء المستعارة (Branch Mapping):
 - "omd": المركز الرئيسي, امدرمان, الفرع الرئيسي, ورشة امدرمان, omdurman
@@ -144,7 +150,7 @@ PROMPT;
     }
 
     /**
-     * تنظيف المدخلات وتقليم المسافات والأحرف الزائدة
+     * تنظيف المدخلات وتقليم المسافات
      *
      * @param string $text
      * @return string
