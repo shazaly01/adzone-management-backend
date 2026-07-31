@@ -4,68 +4,100 @@ namespace App\Services\WhatsApp\Handlers;
 
 use App\Services\WhatsApp\Contracts\QueryHandlerInterface;
 use App\Models\Item;
+use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Collection;
+use Throwable;
 
 class ItemStockQueryHandler implements QueryHandlerInterface
 {
     /**
-     * اسم النية الفريدة التي يعالجها الكلاس
+     * ربط مفاتيح الفروع بأسماء اتصالات قاعدة البيانات
      */
+    protected array $branchConnections = [
+        'omd'    => 'branch_main',
+        'madani' => 'branch_1',
+        'port1'  => 'branch_2',
+        'port2'  => 'branch_3',
+    ];
+
+    /**
+     * الأسماء المترجمة للفروع للعرض على الواتساب
+     */
+    protected array $branchLabels = [
+        'omd'    => 'المركز الرئيسي (أمدرمان)',
+        'madani' => 'فرع مدني',
+        'port1'  => 'فرع بورتسودان 1',
+        'port2'  => 'فرع بورتسودان 2',
+    ];
+
     public function getIntentName(): string
     {
         return 'item_stock';
     }
 
-    /**
-     * وصف دقيق وموجز للنية يُحقن تلقائياً في الـ System Prompt الخاص بالذكاء الاصطناعي
-     */
     public function getDescription(): string
     {
-        return 'استعلام عن رصيد الكميات المتوفرة من صنف معين أو عدة أصناف (مثل: رصيد بنر 130، جرد ورق 70 جرام)';
+        return 'استعلام عن رصيد الكميات المتوفرة من صنف معين أو عدة أصناف (مثل: رصيد بنر 130، جرد ورق 70 جرام، رول اب مدني)';
     }
 
-    /**
-     * تنفيذ الاستعلام وإعادة نص الرد البسيط والمباشر للواتساب
-     *
-     * @param array $parsedIntent
-     * @return string
-     */
     public function handle(array $parsedIntent): string
     {
         $search = trim($parsedIntent['item_name'] ?? $parsedIntent['search'] ?? '');
-        $branchConnections = $parsedIntent['branch_connections'] ?? ['branch_main'];
+        $targetBranch = $parsedIntent['branch'] ?? 'all';
 
         if (empty($search)) {
             return "⚠️ يرجى تحديد اسم الصنف أو الباركود للاستعلام عن المخزون.";
         }
 
+        // تحديد الفروع المراد الاستعلام عنها
+        $connectionsToQuery = [];
+        if ($targetBranch === 'all' || !isset($this->branchConnections[$targetBranch])) {
+            $connectionsToQuery = $this->branchConnections;
+        } else {
+            $connectionsToQuery[$targetBranch] = $this->branchConnections[$targetBranch];
+        }
+
+        $normalizedSearch = $this->normalizeArabic($search);
         $results = collect();
 
-        foreach ($branchConnections as $connection) {
-            $branchResults = $this->searchInBranch($connection, $search);
-            if (!empty($branchResults['items']) && $branchResults['items']->isNotEmpty()) {
-                $results->put($connection, $branchResults);
+        foreach ($connectionsToQuery as $branchKey => $connectionName) {
+            if (!Config::get("database.connections.{$connectionName}")) {
+                continue;
+            }
+
+            try {
+                $branchResults = $this->searchInBranch($connectionName, $search, $normalizedSearch);
+                if (!empty($branchResults['items']) && $branchResults['items']->isNotEmpty()) {
+                    $results->put($branchKey, $branchResults);
+                }
+            } catch (Throwable $e) {
+                Log::error("ItemStockQueryHandler Error [{$branchKey}]: " . $e->getMessage());
             }
         }
 
-        // التوجيه الذكي عند عدم العثور على نتائج في قواعد البيانات
+        // التوجيه الذكي عند عدم العثور على نتائج
         if ($results->isEmpty()) {
-            return "❌ *لم نجد أي صنف يطابق*: \"{$search}\"\n\n"
+            $branchNotice = ($targetBranch !== 'all' && isset($this->branchLabels[$targetBranch]))
+                ? " في *{$this->branchLabels[$targetBranch]}*"
+                : "";
+
+            return "❌ *لم نجد أي صنف يطابق*: \"{$search}\"{$branchNotice}\n\n"
                  . "💡 *نصائح للوصول لنتيجة دقيقة:*\n"
-                 . "• اكتب الكلمة الأساسية فقط للصنف (مثال: اكتب `بنر` بدلاً من `بنر كوريا ممتاز`).\n"
-                 . "• يمكنك البحث باستخدام الباركود الخاص بالصنف مباشرة.\n"
-                 . "• تأكد من كتابة الأحرف بدون أخطاء إملائية.\n\n"
+                 . "• اكتب الكلمة الأساسية فقط للصنف (مثال: `رول اب`).\n"
+                 . "• تأكد من اختيار الفرع الصحيح.\n"
+                 . "• يمكنك البحث باستخدام الباركود مباشرة.\n\n"
                  . "📌 *استعلامات أخرى يمكنك تجربتها:*\n"
-                 . "• `كشف حساب شركة البركة` | `مبيعات اليوم`";
+                 . "• `رصيد بنر 130` | `مبيعات اليوم`";
         }
 
-        return $this->formatWhatsAppReport($search, $results);
+        return $this->formatWhatsAppReport($search, $results, $targetBranch);
     }
 
     /**
      * البحث عن الأصناف ورصيدها في فرع محدد مع الترتيب بحسب المطابقة والحد الأقصى
      */
-    protected function searchInBranch(string $connection, string $search): array
+    protected function searchInBranch(string $connection, string $rawSearch, string $normalizedSearch): array
     {
         $maxResults = 5;
 
@@ -75,11 +107,15 @@ class ItemStockQueryHandler implements QueryHandlerInterface
                 'units.unit',
                 'stocks.store',
             ])
-            ->where(function ($q) use ($search) {
-                $q->where('name', 'like', "%{$search}%")
-                  ->orWhere('aliases', 'like', "%{$search}%")
-                  ->orWhereHas('barcodes', function ($bQ) use ($search) {
-                      $bQ->where('barcode', 'like', "%{$search}%");
+            ->where(function ($q) use ($rawSearch, $normalizedSearch) {
+                $q->where('name', 'like', "%{$rawSearch}%")
+                  ->orWhere('aliases', 'like', "%{$rawSearch}%")
+                  ->orWhereRaw("
+                        LOWER(
+                            REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(name, 'أ', 'ا'), 'إ', 'ا'), 'آ', 'ا'), 'ى', 'ي'), 'ة', 'ه')
+                        ) LIKE ?", ["%{$normalizedSearch}%"])
+                  ->orWhereHas('barcodes', function ($bQ) use ($rawSearch) {
+                      $bQ->where('barcode', 'like', "%{$rawSearch}%");
                   });
             })
             ->orderByRaw("
@@ -88,34 +124,29 @@ class ItemStockQueryHandler implements QueryHandlerInterface
                     WHEN name LIKE ? THEN 2
                     ELSE 3
                 END
-            ", [$search, "{$search}%"]);
+            ", [$rawSearch, "{$rawSearch}%"]);
 
         $totalMatches = $query->count();
         $items = $query->take($maxResults)->get();
 
         $mappedItems = $items->map(function ($item) {
-            $baseUnitName = $item->baseUnit->name ?? 'وحدة';
+            $baseUnitName = $item->baseUnit->name ?? 'قطعة';
 
             $storesStock = $item->stocks->map(function ($stock) use ($item) {
                 $baseQty = (float) $stock->current_quantity;
-                $breakdown = $this->calculateUnitBreakdown($item, $baseQty);
-
                 return [
                     'store_name' => $stock->store->name ?? 'المخزن الرئيسي',
                     'base_qty'   => $baseQty,
-                    'breakdown'  => $breakdown,
+                    'breakdown'  => $this->calculateUnitBreakdown($item, $baseQty),
                 ];
             });
 
             $totalBaseQty = $storesStock->sum('base_qty');
-            $totalBreakdown = $this->calculateUnitBreakdown($item, $totalBaseQty);
 
             return [
                 'id'              => $item->id,
                 'name'            => $item->name,
-                'base_unit'       => $baseUnitName,
-                'total_base_qty'  => $totalBaseQty,
-                'total_breakdown' => $totalBreakdown,
+                'total_breakdown' => $this->calculateUnitBreakdown($item, $totalBaseQty),
                 'stores'          => $storesStock,
             ];
         });
@@ -132,7 +163,7 @@ class ItemStockQueryHandler implements QueryHandlerInterface
      */
     protected function calculateUnitBreakdown(Item $item, float $baseQty): string
     {
-        $baseUnitName = $item->baseUnit->name ?? 'وحدة';
+        $baseUnitName = $item->baseUnit->name ?? 'قطعة';
 
         if ($baseQty == 0) {
             return "0 {$baseUnitName}";
@@ -146,7 +177,7 @@ class ItemStockQueryHandler implements QueryHandlerInterface
             return "{$baseQty} {$baseUnitName}";
         }
 
-        $remainingQty = $baseQty;
+        $remainingQty = abs($baseQty);
         $parts = [];
 
         foreach ($units as $itemUnit) {
@@ -165,25 +196,26 @@ class ItemStockQueryHandler implements QueryHandlerInterface
             $parts[] = "{$formattedRemaining} {$baseUnitName}";
         }
 
-        return implode(' و ', $parts);
+        $result = implode(' و ', $parts);
+
+        return $baseQty < 0 ? "-{$result}" : $result;
     }
 
     /**
-     * تنسيق التقرير النهائي لشاشة الواتساب بطريقة موجزة وسريعة القراءة
+     * تنسيق التقرير النهائي لشاشة الواتساب
      */
-    protected function formatWhatsAppReport(string $search, Collection $results): string
+    protected function formatWhatsAppReport(string $search, Collection $results, string $targetBranch): string
     {
         $output = "📦 *تقرير توفر المخزون*: _{$search}_\n";
         $output .= "-----------------------------------\n";
 
         $totalMoreItems = 0;
 
-        foreach ($results as $branch => $branchData) {
-            $branchLabel = ucfirst(str_replace(['branch_', '_'], ['', ' '], $branch));
-            $output .= "🏢 *الفرع*: {$branchLabel}\n";
+        foreach ($results as $branchKey => $branchData) {
+            $label = $this->branchLabels[$branchKey] ?? $branchKey;
+            $output .= "🏢 *الفرع*: {$label}\n";
 
-            $items = $branchData['items'];
-            foreach ($items as $item) {
+            foreach ($branchData['items'] as $item) {
                 $output .= "🔹 *{$item['name']}*\n";
                 $output .= "  ├ إجمالي المخزون: *{$item['total_breakdown']}*\n";
 
@@ -195,8 +227,7 @@ class ItemStockQueryHandler implements QueryHandlerInterface
             }
 
             if (!empty($branchData['has_more'])) {
-                $moreInBranch = $branchData['total_count'] - $items->count();
-                $totalMoreItems += $moreInBranch;
+                $totalMoreItems += ($branchData['total_count'] - $branchData['items']->count());
             }
 
             $output .= "\n";
@@ -209,5 +240,18 @@ class ItemStockQueryHandler implements QueryHandlerInterface
         }
 
         return trim($output);
+    }
+
+    /**
+     * تطبيع النصوص العربية
+     */
+    protected function normalizeArabic(string $text): string
+    {
+        $text = preg_replace('/[\x{064B}-\x{0652}\x{0640}]/u', '', $text);
+        $text = preg_replace('/[أإآ]/u', 'ا', $text);
+        $text = preg_replace('/ى/u', 'ي', $text);
+        $text = preg_replace('/ة/u', 'ه', $text);
+
+        return trim(mb_strtolower($text));
     }
 }
