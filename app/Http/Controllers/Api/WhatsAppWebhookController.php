@@ -20,6 +20,11 @@ class WhatsAppWebhookController extends Controller
      */
     public function handle(Request $request): JsonResponse
     {
+        // 0. تسجيل وصول الطلب مبدئياً لتأكيد وصول الـ Webhook
+        Log::info('📥 [WA-Webhook] تم استقبال طلب Webhook جديد', [
+            'payload' => $request->all()
+        ]);
+
         // 1. استخراج رقم المرسل والمستقبل المتحقق منهما مسبقاً من الـ Middleware أو استخراجهما من الطلب
         $senderPhone    = $request->attributes->get('sender_phone');
         $recipientPhone = $request->attributes->get('recipient_phone');
@@ -62,11 +67,13 @@ class WhatsAppWebhookController extends Controller
 
         // 3. تجاهل الرسائل الفارغة
         if (empty($trimmedText)) {
+            Log::warning('⚠️ [WA-Webhook] تم تجاهل الطلب: نص الرسالة فارغ');
             return response()->json(['status' => 'ignored_empty_message'], 200);
         }
 
         // 4. الحماية التامة من الحلقة التكرارية (Anti-Loop): تجاهل رسائل البوت الذاتية
         if (str_starts_with($trimmedText, "\u{200B}")) {
+            Log::warning('⚠️ [WA-Webhook] تم تجاهل الطلب: رسالة صالحة من البوت (Anti-Loop)');
             return response()->json(['status' => 'ignored_bot_outbound_response'], 200);
         }
 
@@ -80,6 +87,10 @@ class WhatsAppWebhookController extends Controller
         $fromMe = filter_var($rawFromMe, FILTER_VALIDATE_BOOLEAN);
 
         if ($fromMe && !$this->isSelfMessageFromManager($request, (string) $senderPhone, (string) $recipientPhone)) {
+            Log::warning('⚠️ [WA-Webhook] تم تجاهل الطلب: رسالة صادرة fromMe وليست من المدير المعرف', [
+                'sender'    => $senderPhone,
+                'recipient' => $recipientPhone,
+            ]);
             return response()->json(['status' => 'ignored_outbound_message'], 200);
         }
 
@@ -101,6 +112,9 @@ class WhatsAppWebhookController extends Controller
         $isNewMessage = Cache::add($cacheKey, true, 120);
 
         if (!$isNewMessage) {
+            Log::warning('⚠️ [WA-Webhook] تم تجاهل الطلب: رسالة مكررة (Atomic Lock)', [
+                'message_id' => $messageId,
+            ]);
             return response()->json(['status' => 'ignored_duplicate'], 200);
         }
 
@@ -108,13 +122,19 @@ class WhatsAppWebhookController extends Controller
             // 8. إرسال مهمة المعالجة إلى الـ Queue الخلفي والاستجابة الفورية للسيرفر
             ProcessWhatsAppMessageJob::dispatch((string) $senderPhone, $trimmedText, $messageId);
 
+            Log::info('🚀 [WA-Webhook] تم إرسال الـ Job للطابور بنجاح', [
+                'phone'      => $senderPhone,
+                'text'       => $trimmedText,
+                'message_id' => $messageId,
+            ]);
+
             return response()->json([
                 'status'  => 'success',
                 'message' => 'Message queued for processing'
             ], 200);
 
         } catch (Throwable $e) {
-            Log::error('[WhatsApp Controller] Webhook Queue Dispatch Error', [
+            Log::error('❌ [WA-Webhook] خطأ أثناء إرسال الـ Job إلى الـ Queue', [
                 'message_id'   => $messageId,
                 'sender_phone' => $senderPhone,
                 'error'        => $e->getMessage(),
