@@ -52,7 +52,7 @@ class ReportManagerService
     }
 
     /**
-     * إنتاج تقرير المبيعات للفروع المحددة أو كافة الفروع
+     * إنتاج تقرير المبيعات للفروع المحددة أو كافة الفروع بناءً على هيكل جدول sales
      *
      * @param array $data
      * @return string
@@ -85,16 +85,19 @@ class ReportManagerService
 
             try {
                 $salesData = DB::connection($connectionName)
-                    ->table('invoices')
-                    ->whereDate('created_at', $date)
+                    ->table('sales')
                     ->whereNull('deleted_at')
-                    ->selectRaw('
+                    ->where(function ($query) use ($date) {
+                        $query->whereDate('invoice_date', $date)
+                              ->orWhereDate('created_at', $date);
+                    })
+                    ->selectRaw("
                         COALESCE(SUM(grand_total), 0) as total_amount,
                         COUNT(id) as invoice_count,
-                        COALESCE(SUM(paid_cash), 0) as cash_amount,
-                        COALESCE(SUM(paid_card), 0) as card_amount,
-                        COALESCE(SUM(due_amount), 0) as credit_amount
-                    ')
+                        COALESCE(SUM(CASE WHEN payment_type = 'cash' THEN grand_total ELSE 0 END), 0) as cash_amount,
+                        COALESCE(SUM(CASE WHEN payment_type = 'card' THEN grand_total ELSE 0 END), 0) as card_amount,
+                        COALESCE(SUM(CASE WHEN payment_type NOT IN ('cash', 'card') THEN grand_total ELSE 0 END), 0) as credit_amount
+                    ")
                     ->first();
 
                 if ($salesData) {
@@ -128,7 +131,7 @@ class ReportManagerService
         $responseMessage .= "💳 **تفصيل طرق الدفع:**\n";
         $responseMessage .= "• نقداً (Cash): {$formattedCash} SDG\n";
         $responseMessage .= "• بنك / شبكة (Card): {$formattedCard} SDG\n";
-        $responseMessage .= "• آجل (Credit): {$formattedCredit} SDG\n";
+        $responseMessage .= "• آجل / أخرى: {$formattedCredit} SDG\n";
         $responseMessage .= "-----------------------------------\n";
         $responseMessage .= "🏢 **تفاصيل الفروع:**\n";
         $responseMessage .= implode("\n", $branchSummaries);
@@ -172,7 +175,6 @@ class ReportManagerService
             }
 
             try {
-                // تطبيق التطبيع على مستوى الاستعلام لمنع تعارض الهمزات والياءات
                 $items = DB::connection($connectionName)
                     ->table('items')
                     ->join('item_stocks', 'items.id', '=', 'item_stocks.item_id')
@@ -237,16 +239,9 @@ class ReportManagerService
      */
     protected function normalizeArabic(string $text): string
     {
-        // 1. إزالة التشكيل بالحركات (فتحة، ضمة، كسرة، تنوين، شدة، سكون)
         $text = preg_replace('/[\x{064B}-\x{0652}\x{0640}]/u', '', $text);
-
-        // 2. توحيد أشكال الهمزات إلى ألف مجردة (أ، إ، آ -> ا)
         $text = preg_replace('/[أإآ]/u', 'ا', $text);
-
-        // 3. توحيد الألف المقصورة والياء في نهاية الكلمة (ى -> ي)
         $text = preg_replace('/ى/u', 'ي', $text);
-
-        // 4. توحيد التاء المربوطة والهاء في نهاية الكلمة (ة -> ه)
         $text = preg_replace('/ة/u', 'ه', $text);
 
         return trim(mb_strtolower($text));
