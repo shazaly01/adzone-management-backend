@@ -2,7 +2,6 @@
 
 namespace App\Services\WhatsApp;
 
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -10,41 +9,34 @@ use Throwable;
 class IntentParsingService
 {
     /**
-     * تحليل نية النص الوارد من الواتساب وتحويله إلى كائن JSON مفسر.
-     *
-     * @param string $userMessage
-     * @param string $phoneNumber
-     * @return array|null
+     * تحليل نية النص الوارد من الواتساب مع تسجيل التفاصيل في اللوغ
      */
     public function parseIntent(string $userMessage, string $phoneNumber): ?array
     {
+        Log::info(" [WA-IntentParsing] بدء تحليل رسالة جديدة", [
+            'phone'   => $phoneNumber,
+            'message' => $userMessage,
+        ]);
+
         $cleanedMessage = $this->sanitizeInput($userMessage);
 
         if (empty($cleanedMessage)) {
+            Log::warning("⚠️ [WA-IntentParsing] النص فارغ بعد التنظيف");
             return null;
         }
 
-        // منع التكرار اللحظي (Deduplication Lock) لمدة 5 ثوانٍ
-        $lockKey = 'wa_lock_' . $phoneNumber . '_' . md5($cleanedMessage);
+        $result = $this->executeAiInference($cleanedMessage);
 
-        if (! Cache::lock($lockKey, 5)->get()) {
-            Log::info("IntentParsingService: تم تجاهل الطلب المكرر اللحظي من الرقم {$phoneNumber}");
-            return null;
-        }
+        Log::info(" [WA-IntentParsing] نتيجة تحليل النية من DeepSeek", [
+            'phone'  => $phoneNumber,
+            'result' => $result,
+        ]);
 
-        // تخزين نتيجة النية في الكاش لمدة 10 دقائق
-        $cacheKey = 'intent_' . md5($cleanedMessage);
-
-        return Cache::remember($cacheKey, now()->addMinutes(10), function () use ($cleanedMessage) {
-            return $this->executeAiInference($cleanedMessage);
-        });
+        return $result;
     }
 
     /**
-     * الاتصال المباشر بـ DeepSeek API بأسلوب Stateless
-     *
-     * @param string $message
-     * @return array|null
+     * الاتصال المباشر بـ DeepSeek API
      */
     protected function executeAiInference(string $message): ?array
     {
@@ -58,6 +50,8 @@ class IntentParsingService
         $systemPrompt = $this->buildSystemPrompt();
 
         try {
+            Log::info(" [WA-IntentParsing] جاري إرسال الطلب لـ DeepSeek API");
+
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $apiKey,
                 'Content-Type'  => 'application/json',
@@ -77,26 +71,28 @@ class IntentParsingService
                 return json_decode($content, true);
             }
 
-            Log::error('DeepSeek API Error: ' . $response->body());
+            Log::error('❌ [WA-IntentParsing] فشل استجابة DeepSeek API', [
+                'status' => $response->status(),
+                'body'   => $response->body(),
+            ]);
             return null;
 
         } catch (Throwable $e) {
-            Log::error('DeepSeek Connection Exception: ' . $e->getMessage());
+            Log::error('❌ [WA-IntentParsing] استثناء أثناء الاتصال بـ DeepSeek', [
+                'error' => $e->getMessage(),
+            ]);
             return null;
         }
     }
 
     /**
-     * بناء الـ System Prompt الديناميكي عبر استقراء النيات المسجلة في الـ Registry
-     *
-     * @return string
+     * بناء الـ System Prompt الديناميكي
      */
     protected function buildSystemPrompt(): string
     {
         $today   = now()->format('Y-m-d');
         $dayName = now()->locale('ar')->isoFormat('dddd');
 
-        // جلب النيات المسجلة حالياً في النظام ديناميكياً
         $registry = app(QueryHandlerRegistry::class);
         $handlers = $registry->getRegisteredHandlers();
 
@@ -149,12 +145,6 @@ class IntentParsingService
 PROMPT;
     }
 
-    /**
-     * تنظيف المدخلات وتقليم المسافات
-     *
-     * @param string $text
-     * @return string
-     */
     protected function sanitizeInput(string $text): string
     {
         $text = preg_replace('/\s+/u', ' ', $text);

@@ -7,18 +7,15 @@ class ReportManagerService
     protected QueryHandlerRegistry $registry;
 
     /**
-     * حقن الـ QueryHandlerRegistry تلقائياً
+     * دعم الإنشاء المباشر new ReportManagerService() أو الـ Injection
      */
-    public function __construct(QueryHandlerRegistry $registry)
+    public function __construct(?QueryHandlerRegistry $registry = null)
     {
-        $this->registry = $registry;
+        $this->registry = $registry ?? app(QueryHandlerRegistry::class);
     }
 
     /**
-     * معالجة النية وإصدار الرد البسيط المناسب عبر تحويل الطلب لسجل الاستعلامات المركزي
-     *
-     * @param array $parsedIntent
-     * @return string
+     * معالجة النية وإصدار الرد
      */
     public function generateReport(array $parsedIntent): string
     {

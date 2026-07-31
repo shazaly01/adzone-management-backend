@@ -16,10 +16,7 @@ class QueryHandlerRegistry
     protected array $handlers = [];
 
     /**
-     * تسجيل معالج استعلام جديد داخل السجل
-     *
-     * @param QueryHandlerInterface $handler
-     * @return void
+     * تسجيل معالج استعلام جديد
      */
     public function register(QueryHandlerInterface $handler): void
     {
@@ -27,35 +24,48 @@ class QueryHandlerRegistry
     }
 
     /**
-     * تنفيذ الاستعلام المناسب بناءً على النية المحللة
-     *
-     * @param array $parsedIntent
-     * @return string
+     * تنفيذ الاستعلام المناسب وتسجيل خطوات التنفيذ
      */
     public function handle(array $parsedIntent): string
     {
         $intent = $parsedIntent['intent'] ?? 'unknown';
 
+        Log::info(" [WA-Registry] استلام نية لمعالجتها", [
+            'intent'  => $intent,
+            'payload' => $parsedIntent,
+        ]);
+
         if (isset($this->handlers[$intent])) {
             try {
-                return $this->handlers[$intent]->handle($parsedIntent);
+                Log::info(" [WA-Registry] توجيه النية للـ Handler المسجل: " . get_class($this->handlers[$intent]));
+
+                $response = $this->handlers[$intent]->handle($parsedIntent);
+
+                Log::info(" [WA-Registry] تم توليد الرد بنجاح", [
+                    'intent'   => $intent,
+                    'response' => $response,
+                ]);
+
+                return $response;
+
             } catch (Throwable $e) {
-                Log::error("QueryHandlerRegistry Exception [{$intent}]: " . $e->getMessage(), [
-                    'exception' => $e,
-                    'payload'   => $parsedIntent,
+                Log::error("❌ [WA-Registry] خطأ أثناء تنفيذ الـ Handler [{$intent}]", [
+                    'error'   => $e->getMessage(),
+                    'trace'   => $e->getTraceAsString(),
+                    'payload' => $parsedIntent,
                 ]);
 
                 return "⚠️ تعذر استكمال الاستعلام حالياً بسبب خطأ غير متوقع. يرجى المحاولة لاحقاً.";
             }
         }
 
+        Log::warning("⚠️ [WA-Registry] لم يتم العثور على Handler للنية: {$intent}");
+
         return $this->getFallbackResponse();
     }
 
     /**
-     * جلب جميع المعالجات المسجلة لاستخدامها في بناء Prompt الذكاء الاصطناعي ديناميكياً
-     *
-     * @return array<string, QueryHandlerInterface>
+     * جلب جميع المعالجات المسجلة
      */
     public function getRegisteredHandlers(): array
     {
@@ -63,9 +73,7 @@ class QueryHandlerRegistry
     }
 
     /**
-     * الرد التوضيحي الافتراضي عند عدم فهم النية
-     *
-     * @return string
+     * الرد التوضيحي الافتراضي
      */
     protected function getFallbackResponse(): string
     {
