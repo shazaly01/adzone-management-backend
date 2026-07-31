@@ -20,12 +20,6 @@ class ValidateWhatsAppSender
     {
         $event = $request->input('event') ?? $request->input('type') ?? '';
 
-        Log::info('[WhatsApp Webhook] Incoming Webhook request received', [
-            'event'       => $event,
-            'ip'          => $request->ip(),
-            'all_payload' => $request->all(),
-        ]);
-
         // 1. السماح بالأحداث النصية فقط وتجاهل أحداث النظام
         $allowedEvents = [
             'onmessage',
@@ -36,8 +30,6 @@ class ValidateWhatsAppSender
         ];
 
         if (is_string($event) && !empty($event) && !in_array(strtolower($event), $allowedEvents, true)) {
-            Log::notice('[WhatsApp Webhook] Ignored system event', ['event' => $event]);
-
             return response()->json([
                 'status'  => 'ignored_system_event',
                 'message' => 'System event acknowledged and ignored.'
@@ -72,7 +64,7 @@ class ValidateWhatsAppSender
 
         $rawRecipientString = is_string($rawRecipient) || is_numeric($rawRecipient) ? (string) $rawRecipient : '';
 
-        // 4. استخراج الكاتب الاصلي (Author)
+        // 4. استخراج الكاتب الأصلي (Author)
         $rawAuthor = $request->input('author')
             ?? $request->input('data.author')
             ?? '';
@@ -91,11 +83,6 @@ class ValidateWhatsAppSender
             ?? (!empty($rawRecipientString) && str_contains($rawRecipientString, '@g.us'));
 
         if (filter_var($isGroup, FILTER_VALIDATE_BOOLEAN)) {
-            Log::notice('[WhatsApp Webhook] Ignored group message', [
-                'sender'    => $rawSenderString,
-                'recipient' => $rawRecipientString,
-            ]);
-
             return response()->json([
                 'status'  => 'ignored_group_message',
                 'message' => 'Group messages are ignored.'
@@ -111,14 +98,6 @@ class ValidateWhatsAppSender
 
         $adminDigits = $this->cleanPhoneNumber((string) $rawAdminPhone);
 
-        Log::info('[WhatsApp Webhook] Phone Parsing Details', [
-            'raw_sender'       => $rawSenderString,
-            'parsed_sender'    => $senderDigits,
-            'raw_recipient'    => $rawRecipientString,
-            'raw_author'       => $rawAuthorString,
-            'configured_admin' => $adminDigits,
-        ]);
-
         if (empty($adminDigits) || empty($senderDigits)) {
             Log::error('[WhatsApp Webhook] Admin config missing or invalid sender digits');
 
@@ -130,11 +109,6 @@ class ValidateWhatsAppSender
 
         // 7. الشرط الأول: المرسل يجب أن يكون هو المدير المصرح له
         if (!$this->isPhoneMatch($senderDigits, $adminDigits)) {
-            Log::warning('[WhatsApp Webhook] Sender phone does not match admin phone', [
-                'sender' => $senderDigits,
-                'admin'  => $adminDigits,
-            ]);
-
             return response()->json([
                 'status'  => 'ignored_unauthorized_sender',
                 'message' => 'Sender is not authorized admin.'
@@ -152,11 +126,6 @@ class ValidateWhatsAppSender
         $isSelfChat = $isSelfChatByAuthor || $isSelfChatByPhone;
 
         if (!$isSelfChat) {
-            Log::notice('[WhatsApp Webhook] Outbound message ignored - Not sent to self', [
-                'author'    => $rawAuthorString,
-                'recipient' => $rawRecipientString,
-            ]);
-
             return response()->json([
                 'status'  => 'ignored_not_self_chat',
                 'message' => 'Outbound message directed to external contact ignored.'
@@ -165,12 +134,6 @@ class ValidateWhatsAppSender
 
         // 9. اعتماد الطلب وتمريره
         $request->attributes->set('sender_phone', $senderDigits);
-
-        Log::info('[WhatsApp Webhook] Self-Chat Verification Passed Successfully', [
-            'sender_phone' => $senderDigits,
-            'author'       => $rawAuthorString,
-            'recipient'    => $rawRecipientString,
-        ]);
 
         return $next($request);
     }

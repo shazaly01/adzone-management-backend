@@ -13,28 +13,38 @@ use Throwable;
 class WhatsAppWebhookController extends Controller
 {
     /**
-     * Handle incoming WhatsApp Webhook from WPPConnect Server.
+     * Handle incoming WhatsApp Webhook from WPPConnect Server / Evolution API.
      *
      * @param Request $request
      * @return JsonResponse
      */
     public function handle(Request $request): JsonResponse
     {
-        Log::info('[WhatsApp Controller] Controller execution started');
-
-        // 1. استخراج رقم المرسل المصرح له من الـ Middleware
-        $senderPhone = $request->attributes->get('sender_phone');
+        // 1. استخراج رقم المرسل والمستقبل المتحقق منهما مسبقاً من الـ Middleware أو استخراجهما من الطلب
+        $senderPhone    = $request->attributes->get('sender_phone');
+        $recipientPhone = $request->attributes->get('recipient_phone');
 
         if (!$senderPhone) {
             $sender = $request->input('from')
                 ?? $request->input('chatId')
                 ?? $request->input('data.from')
+                ?? $request->input('data.key.remoteJid')
                 ?? '';
 
             $senderPhone = $this->cleanPhoneNumber((string) (is_array($sender) ? json_encode($sender) : $sender));
         }
 
-        // 2. استخراج نص الرسالة
+        if (!$recipientPhone) {
+            $recipient = $request->input('to')
+                ?? $request->input('data.to')
+                ?? $request->input('chatId')
+                ?? $request->input('data.chatId')
+                ?? '';
+
+            $recipientPhone = $this->cleanPhoneNumber((string) (is_array($recipient) ? json_encode($recipient) : $recipient));
+        }
+
+        // 2. استخراج نص الرسالة بطريقة آمنة وبكافة الخيارات الممكنة
         $rawMessageText = $request->input('body')
             ?? $request->input('content')
             ?? $request->input('data.body')
@@ -50,24 +60,30 @@ class WhatsAppWebhookController extends Controller
 
         $trimmedText = trim((string) $rawMessageText);
 
-        Log::info('[WhatsApp Controller] Message Payload Extracted', [
-            'sender_phone' => $senderPhone,
-            'message_text' => $trimmedText,
-        ]);
-
         // 3. تجاهل الرسائل الفارغة
         if (empty($trimmedText)) {
-            Log::notice('[WhatsApp Controller] Ignored empty message text');
             return response()->json(['status' => 'ignored_empty_message'], 200);
         }
 
-        // 4. الحماية من التكرار اللانهائي (Anti-Loop): تجاهل ردود البوت المبدوءة بـ Zero-Width Space
+        // 4. الحماية التامة من الحلقة التكرارية (Anti-Loop): تجاهل رسائل البوت الذاتية
         if (str_starts_with($trimmedText, "\u{200B}")) {
-            Log::notice('[WhatsApp Controller] Ignored bot outbound response (Anti-Loop triggered)');
             return response()->json(['status' => 'ignored_bot_outbound_response'], 200);
         }
 
-        // 5. استخراج معرف الرسالة لمكافحة التكرار
+        // 5. التعامل مع ميزة الإرسال الذاتي (fromMe) والتحقق الإضافي المزدوج
+        $rawFromMe = $request->input('fromMe')
+            ?? $request->input('data.fromMe')
+            ?? $request->input('data.key.fromMe')
+            ?? $request->input('key.fromMe')
+            ?? false;
+
+        $fromMe = filter_var($rawFromMe, FILTER_VALIDATE_BOOLEAN);
+
+        if ($fromMe && !$this->isSelfMessageFromManager($request, (string) $senderPhone, (string) $recipientPhone)) {
+            return response()->json(['status' => 'ignored_outbound_message'], 200);
+        }
+
+        // 6. استخراج معرف الرسالة بأمان لمنع أخطاء التكرار
         $rawId = $request->input('id')
             ?? $request->input('data.id')
             ?? $request->input('data.key.id')
@@ -80,23 +96,17 @@ class WhatsAppWebhookController extends Controller
         $rawIdString = is_string($rawId) || is_numeric($rawId) ? (string) $rawId : '';
         $messageId   = !empty($rawIdString) ? $rawIdString : md5($senderPhone . '_' . $trimmedText);
 
-        // 6. منع تكرار المعالجة عبر Cache Lock
+        // 7. منع معالجة الرسائل المكررة بشكل ذري (Atomic Lock)
         $cacheKey     = 'wa_msg_' . $messageId;
         $isNewMessage = Cache::add($cacheKey, true, 120);
 
         if (!$isNewMessage) {
-            Log::notice('[WhatsApp Controller] Ignored duplicate message payload', ['message_id' => $messageId]);
             return response()->json(['status' => 'ignored_duplicate'], 200);
         }
 
         try {
-            // 7. تحويل الرسالة إلى الـ Queue
+            // 8. إرسال مهمة المعالجة إلى الـ Queue الخلفي والاستجابة الفورية للسيرفر
             ProcessWhatsAppMessageJob::dispatch((string) $senderPhone, $trimmedText, $messageId);
-
-            Log::info('[WhatsApp Controller] Job Dispatched Successfully to Queue', [
-                'sender_phone' => $senderPhone,
-                'message_id'   => $messageId,
-            ]);
 
             return response()->json([
                 'status'  => 'success',
@@ -108,7 +118,6 @@ class WhatsAppWebhookController extends Controller
                 'message_id'   => $messageId,
                 'sender_phone' => $senderPhone,
                 'error'        => $e->getMessage(),
-                'trace'        => $e->getTraceAsString(),
             ]);
 
             return response()->json([
@@ -116,6 +125,47 @@ class WhatsAppWebhookController extends Controller
                 'message' => 'Failed to dispatch message processing'
             ], 200);
         }
+    }
+
+    /**
+     * Verify if the message is sent by the authorized manager to their own self.
+     *
+     * @param Request $request
+     * @param string $senderPhone
+     * @param string $recipientPhone
+     * @return bool
+     */
+    protected function isSelfMessageFromManager(Request $request, string $senderPhone, string $recipientPhone): bool
+    {
+        $managerPhone = config('services.wppconnect.admin_phone')
+            ?? config('services.whatsapp.admin_phone')
+            ?? '';
+
+        if (empty($managerPhone)) {
+            return true;
+        }
+
+        $cleanManagerPhone = $this->cleanPhoneNumber((string) $managerPhone);
+        $isSenderManager   = $this->isPhoneMatch($senderPhone, $cleanManagerPhone);
+
+        // فحص معاري يدعم LID (author === recipient) مع الحفاظ على الفحص القديم كبديل
+        $rawAuthor    = $request->input('author') ?? $request->input('data.author') ?? '';
+        $rawRecipient = $request->input('to') ?? $request->input('chatId') ?? $request->input('data.to') ?? '';
+
+        if (is_array($rawAuthor)) {
+            $rawAuthor = $rawAuthor['id'] ?? $rawAuthor['_serialized'] ?? json_encode($rawAuthor);
+        }
+        if (is_array($rawRecipient)) {
+            $rawRecipient = $rawRecipient['id'] ?? $rawRecipient['_serialized'] ?? json_encode($rawRecipient);
+        }
+
+        $rawAuthorString    = is_string($rawAuthor) || is_numeric($rawAuthor) ? (string) $rawAuthor : '';
+        $rawRecipientString = is_string($rawRecipient) || is_numeric($rawRecipient) ? (string) $rawRecipient : '';
+
+        $isSelfByAuthor     = !empty($rawAuthorString) && !empty($rawRecipientString) && ($rawAuthorString === $rawRecipientString);
+        $isRecipientManager = empty($recipientPhone) || $this->isPhoneMatch($recipientPhone, $cleanManagerPhone);
+
+        return $isSenderManager && ($isSelfByAuthor || $isRecipientManager);
     }
 
     /**
@@ -134,5 +184,26 @@ class WhatsAppWebhookController extends Controller
         $phoneOnly      = strtok($withoutDomain, ':');
 
         return preg_replace('/[^0-9]/', '', (string) $phoneOnly);
+    }
+
+    /**
+     * Flexible phone comparison based on trailing digits.
+     *
+     * @param string $phone1
+     * @param string $phone2
+     * @return bool
+     */
+    protected function isPhoneMatch(string $phone1, string $phone2): bool
+    {
+        if ($phone1 === $phone2) {
+            return true;
+        }
+
+        $minLen = 9;
+        if (strlen($phone1) >= $minLen && strlen($phone2) >= $minLen) {
+            return substr($phone1, -$minLen) === substr($phone2, -$minLen);
+        }
+
+        return false;
     }
 }
