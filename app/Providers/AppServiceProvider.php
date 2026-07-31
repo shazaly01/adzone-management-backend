@@ -3,6 +3,9 @@
 namespace App\Providers;
 
 use Illuminate\Support\ServiceProvider;
+use App\Services\WhatsApp\QueryHandlerRegistry;
+use App\Services\WhatsApp\Handlers\SalesQueryHandler;
+use App\Services\WhatsApp\Handlers\InventoryQueryHandler;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -19,6 +22,15 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        //
+        // تسجيل سجل استعلامات الواتساب المركزي كـ Singleton
+        $this->app->singleton(QueryHandlerRegistry::class, function ($app) {
+            $registry = new QueryHandlerRegistry();
+
+            // تسجيل معالجات الاستعلامات المتاحة حالياً
+            $registry->register($app->make(SalesQueryHandler::class));
+            $registry->register($app->make(InventoryQueryHandler::class));
+
+            return $registry;
+        });
     }
 }
