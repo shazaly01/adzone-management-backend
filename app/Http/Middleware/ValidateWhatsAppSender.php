@@ -18,7 +18,6 @@ class ValidateWhatsAppSender
      */
     public function handle(Request $request, Closure $next): Response
     {
-        // 0. تسجيل الاستقبال الأولي للـ Webhook
         $event = $request->input('event') ?? $request->input('type') ?? '';
 
         Log::info('[WhatsApp Webhook] Incoming Webhook request received', [
@@ -27,7 +26,7 @@ class ValidateWhatsAppSender
             'all_payload' => $request->all(),
         ]);
 
-        // 1. السماح بالأحداث النصية (بما فيها onSelfMessage) وتجاهل أحداث النظام غير النصية
+        // 1. السماح بالأحداث النصية فقط وتجاهل أحداث النظام
         $allowedEvents = [
             'onmessage',
             'onanymessage',
@@ -45,7 +44,7 @@ class ValidateWhatsAppSender
             ], Response::HTTP_OK);
         }
 
-        // 2. استخراج معرف المرسل الأصلي بأمان
+        // 2. استخراج معرف المرسل (Sender)
         $rawSender = $request->input('from')
             ?? $request->input('chatId')
             ?? $request->input('sender.id')
@@ -60,21 +59,31 @@ class ValidateWhatsAppSender
 
         $rawSenderString = is_string($rawSender) || is_numeric($rawSender) ? (string) $rawSender : '';
 
-        // 3. استخراج معرف المستقبل الأصلي (الشات Target / To) بأمان
+        // 3. استخراج المستلم (To / Target Chat)
         $rawRecipient = $request->input('to')
-            ?? $request->input('data.to')
             ?? $request->input('chatId')
+            ?? $request->input('data.to')
             ?? $request->input('data.chatId')
-            ?? $request->input('data.key.remoteJid')
             ?? '';
 
         if (is_array($rawRecipient)) {
-            $rawRecipient = $rawRecipient['id'] ?? $rawRecipient['remoteJid'] ?? json_encode($rawRecipient);
+            $rawRecipient = $rawRecipient['id'] ?? $rawRecipient['_serialized'] ?? json_encode($rawRecipient);
         }
 
         $rawRecipientString = is_string($rawRecipient) || is_numeric($rawRecipient) ? (string) $rawRecipient : '';
 
-        // 4. تجاهل رسائل المجموعات فوراً
+        // 4. استخراج الكاتب الاصلي (Author)
+        $rawAuthor = $request->input('author')
+            ?? $request->input('data.author')
+            ?? '';
+
+        if (is_array($rawAuthor)) {
+            $rawAuthor = $rawAuthor['id'] ?? $rawAuthor['_serialized'] ?? json_encode($rawAuthor);
+        }
+
+        $rawAuthorString = is_string($rawAuthor) || is_numeric($rawAuthor) ? (string) $rawAuthor : '';
+
+        // 5. استبعاد المجموعات فوراً
         $isGroup = $request->input('isGroupMsg')
             ?? $request->input('isGroup')
             ?? $request->input('data.isGroup')
@@ -93,21 +102,8 @@ class ValidateWhatsAppSender
             ], Response::HTTP_OK);
         }
 
-        // 5. التحقق من وجود مرسل
-        if (empty($rawSenderString)) {
-            Log::warning('[WhatsApp Webhook] No valid sender found in payload');
-
-            return response()->json([
-                'status'  => 'ignored_no_sender',
-                'message' => 'Webhook payload does not contain a valid sender.'
-            ], Response::HTTP_OK);
-        }
-
-        // 6. تنظيف وتجريد رقم المرسل ورقم المستقبل
-        $senderDigits    = $this->cleanPhoneNumber($rawSenderString);
-        $recipientDigits = $this->cleanPhoneNumber($rawRecipientString);
-
-        // 7. قراءة وتنظيف رقم المدير المعتمد من التكوين
+        // 6. التحقق من تنظيف رقم المدير والـ Sender
+        $senderDigits = $this->cleanPhoneNumber($rawSenderString);
         $rawAdminPhone = config('services.wppconnect.admin_phone')
             ?? config('services.whatsapp.admin_phone')
             ?? config('services.whatsapp.manager_phone')
@@ -115,29 +111,25 @@ class ValidateWhatsAppSender
 
         $adminDigits = $this->cleanPhoneNumber((string) $rawAdminPhone);
 
-        Log::info('[WhatsApp Webhook] Phone Parsing & Validation Details', [
+        Log::info('[WhatsApp Webhook] Phone Parsing Details', [
             'raw_sender'       => $rawSenderString,
             'parsed_sender'    => $senderDigits,
             'raw_recipient'    => $rawRecipientString,
-            'parsed_recipient' => $recipientDigits,
+            'raw_author'       => $rawAuthorString,
             'configured_admin' => $adminDigits,
         ]);
 
         if (empty($adminDigits) || empty($senderDigits)) {
-            Log::error('[WhatsApp Webhook] Missing sender digits or admin configuration missing', [
-                'sender_digits' => $senderDigits,
-                'admin_digits'  => $adminDigits,
-            ]);
+            Log::error('[WhatsApp Webhook] Admin config missing or invalid sender digits');
 
             return response()->json([
                 'status'  => 'ignored_unauthorized',
-                'message' => 'Unauthorized WhatsApp sender or admin phone misconfigured.'
+                'message' => 'Unauthorized sender or missing admin config.'
             ], Response::HTTP_OK);
         }
 
-        // 8. التحقق الأول: يجب أن يكون المرسل هو رقم المدير
-        $isSenderAdmin = $this->isPhoneMatch($senderDigits, $adminDigits);
-        if (!$isSenderAdmin) {
+        // 7. الشرط الأول: المرسل يجب أن يكون هو المدير المصرح له
+        if (!$this->isPhoneMatch($senderDigits, $adminDigits)) {
             Log::warning('[WhatsApp Webhook] Sender phone does not match admin phone', [
                 'sender' => $senderDigits,
                 'admin'  => $adminDigits,
@@ -149,30 +141,35 @@ class ValidateWhatsAppSender
             ], Response::HTTP_OK);
         }
 
-        // 9. التحقق الثاني (الشرط الجوهري): يجب أن تكون الرسالة موجهة لرقم المدير نفسه (Self-Chat / Note to Self)
-        if (!empty($recipientDigits)) {
-            $isRecipientAdmin = $this->isPhoneMatch($recipientDigits, $adminDigits);
-            if (!$isRecipientAdmin) {
-                Log::notice('[WhatsApp Webhook] Outbound message ignored - Not sent to self', [
-                    'sender'    => $senderDigits,
-                    'recipient' => $recipientDigits,
-                    'admin'     => $adminDigits,
-                ]);
+        // 8. الشرط المعماري الثاني (الرسالة الذاتية Note to Self):
+        // إما أن يكون الكاتب مساوياً للمستلم تماماً (author === to)
+        // أو أن يكون المستلم المباشر هو رقم المدير بـ @c.us
+        $isSelfChatByAuthor = !empty($rawAuthorString) && !empty($rawRecipientString) && ($rawAuthorString === $rawRecipientString);
 
-                return response()->json([
-                    'status'  => 'ignored_not_self_chat',
-                    'message' => 'Message is directed to another contact, ignored.'
-                ], Response::HTTP_OK);
-            }
+        $recipientDigits    = $this->cleanPhoneNumber($rawRecipientString);
+        $isSelfChatByPhone  = !empty($recipientDigits) && $this->isPhoneMatch($recipientDigits, $adminDigits);
+
+        $isSelfChat = $isSelfChatByAuthor || $isSelfChatByPhone;
+
+        if (!$isSelfChat) {
+            Log::notice('[WhatsApp Webhook] Outbound message ignored - Not sent to self', [
+                'author'    => $rawAuthorString,
+                'recipient' => $rawRecipientString,
+            ]);
+
+            return response()->json([
+                'status'  => 'ignored_not_self_chat',
+                'message' => 'Outbound message directed to external contact ignored.'
+            ], Response::HTTP_OK);
         }
 
-        // 10. حفظ الأرقام المنظفة في attributes الطلب للاستخدام في الـ Controller
+        // 9. اعتماد الطلب وتمريره
         $request->attributes->set('sender_phone', $senderDigits);
-        $request->attributes->set('recipient_phone', $recipientDigits);
 
         Log::info('[WhatsApp Webhook] Self-Chat Verification Passed Successfully', [
-            'sender_phone'    => $senderDigits,
-            'recipient_phone' => $recipientDigits,
+            'sender_phone' => $senderDigits,
+            'author'       => $rawAuthorString,
+            'recipient'    => $rawRecipientString,
         ]);
 
         return $next($request);
@@ -197,7 +194,7 @@ class ValidateWhatsAppSender
     }
 
     /**
-     * Compare two phone numbers flexibly by checking the trailing digits.
+     * Compare two phone numbers flexibly by checking trailing digits.
      *
      * @param string $phone1
      * @param string $phone2
