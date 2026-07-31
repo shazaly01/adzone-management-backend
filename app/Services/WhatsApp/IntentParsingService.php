@@ -41,7 +41,7 @@ class IntentParsingService
         });
     }
 
-    /**
+/**
      * الاتصال المباشر بـ DeepSeek API بأسلوب Stateless
      *
      * @param string $message
@@ -50,7 +50,12 @@ class IntentParsingService
     protected function executeAiInference(string $message): ?array
     {
         $apiKey = config('services.deepseek.key');
-        $baseUrl = config('services.deepseek.url', 'https://api.deepseek.com/v1');
+        $baseUrl = config('services.deepseek.url', 'https://api.deepseek.com');
+
+        // ضمان عدم تكرار chat/completions في الرابط
+        $endpoint = str_contains($baseUrl, 'chat/completions')
+            ? $baseUrl
+            : rtrim($baseUrl, '/') . '/chat/completions';
 
         $systemPrompt = $this->buildSystemPrompt();
 
@@ -58,7 +63,7 @@ class IntentParsingService
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $apiKey,
                 'Content-Type' => 'application/json',
-            ])->timeout(15)->post("{$baseUrl}/chat/completions", [
+            ])->timeout(15)->post($endpoint, [
                 'model' => 'deepseek-chat',
                 'messages' => [
                     ['role' => 'system', 'content' => $systemPrompt],
