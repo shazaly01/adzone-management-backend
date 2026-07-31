@@ -22,8 +22,9 @@ class WhatsAppWebhookController extends Controller
     {
         Log::info('[WhatsApp Controller] Controller execution started');
 
-        // 1. استخراج رقم المرسل المتحقق منه مسبقاً من الـ Middleware أو من الجسم
-        $senderPhone = $request->attributes->get('sender_phone');
+        // 1. استخراج رقم المرسل والمستقبل المتحقق منهما مسبقاً من الـ Middleware أو استخراجهما من الطلب
+        $senderPhone    = $request->attributes->get('sender_phone');
+        $recipientPhone = $request->attributes->get('recipient_phone');
 
         if (!$senderPhone) {
             $sender = $request->input('from')
@@ -32,16 +33,20 @@ class WhatsAppWebhookController extends Controller
                 ?? $request->input('data.key.remoteJid')
                 ?? '';
 
-            if (is_array($sender)) {
-                $sender = json_encode($sender);
-            }
-
-            $withoutDomain = strtok((string) $sender, '@');
-            $phoneOnly = strtok($withoutDomain, ':');
-            $senderPhone = preg_replace('/[^0-9]/', '', (string) $phoneOnly);
+            $senderPhone = $this->cleanPhoneNumber((string) (is_array($sender) ? json_encode($sender) : $sender));
         }
 
-        // 2. استخراج نص الرسالة بطريقة آمنة من المصفوفات
+        if (!$recipientPhone) {
+            $recipient = $request->input('to')
+                ?? $request->input('data.to')
+                ?? $request->input('chatId')
+                ?? $request->input('data.chatId')
+                ?? '';
+
+            $recipientPhone = $this->cleanPhoneNumber((string) (is_array($recipient) ? json_encode($recipient) : $recipient));
+        }
+
+        // 2. استخراج نص الرسالة بطريقة آمنة
         $rawMessageText = $request->input('body')
             ?? $request->input('content')
             ?? $request->input('data.body')
@@ -58,11 +63,12 @@ class WhatsAppWebhookController extends Controller
         $trimmedText = trim((string) $rawMessageText);
 
         Log::info('[WhatsApp Controller] Message Payload Extracted', [
-            'sender_phone' => $senderPhone,
-            'message_text' => $trimmedText,
+            'sender_phone'    => $senderPhone,
+            'recipient_phone' => $recipientPhone,
+            'message_text'    => $trimmedText,
         ]);
 
-        // 3. تجاهل الرسائل الفارغة أو أحداث النظام غير النصية
+        // 3. تجاهل الرسائل الفارغة
         if (empty($trimmedText)) {
             Log::notice('[WhatsApp Controller] Ignored empty message text');
             return response()->json(['status' => 'ignored_empty_message'], 200);
@@ -74,7 +80,7 @@ class WhatsAppWebhookController extends Controller
             return response()->json(['status' => 'ignored_bot_outbound_response'], 200);
         }
 
-        // 5. التعامل مع ميزة الإرسال الذاتي (fromMe) بحزم
+        // 5. التعامل مع ميزة الإرسال الذاتي (fromMe) والتحقق الإضافي المزدوج
         $rawFromMe = $request->input('fromMe')
             ?? $request->input('data.fromMe')
             ?? $request->input('data.key.fromMe')
@@ -83,17 +89,21 @@ class WhatsAppWebhookController extends Controller
 
         $fromMe = filter_var($rawFromMe, FILTER_VALIDATE_BOOLEAN);
 
-        Log::info('[WhatsApp Controller] Self-Message Check', [
-            'fromMe'       => $fromMe,
-            'sender_phone' => $senderPhone,
+        Log::info('[WhatsApp Controller] Self-Message Detailed Validation', [
+            'fromMe'          => $fromMe,
+            'sender_phone'    => $senderPhone,
+            'recipient_phone' => $recipientPhone,
         ]);
 
-        if ($fromMe && !$this->isSelfMessageFromManager((string) $senderPhone)) {
-            Log::warning('[WhatsApp Controller] Outbound message ignored (Not authorized manager)');
+        if ($fromMe && !$this->isSelfMessageFromManager((string) $senderPhone, (string) $recipientPhone)) {
+            Log::warning('[WhatsApp Controller] Outbound message ignored (Not a self-chat note to manager)', [
+                'sender'    => $senderPhone,
+                'recipient' => $recipientPhone,
+            ]);
             return response()->json(['status' => 'ignored_outbound_message'], 200);
         }
 
-        // 6. استخراج معرف الرسالة بأمان لمنع Array to string conversion
+        // 6. استخراج معرف الرسالة بأمان لمنع أخطاء التكرار
         $rawId = $request->input('id')
             ?? $request->input('data.id')
             ?? $request->input('data.key.id')
@@ -104,10 +114,10 @@ class WhatsAppWebhookController extends Controller
         }
 
         $rawIdString = is_string($rawId) || is_numeric($rawId) ? (string) $rawId : '';
-        $messageId = !empty($rawIdString) ? $rawIdString : md5($senderPhone . '_' . $trimmedText);
+        $messageId   = !empty($rawIdString) ? $rawIdString : md5($senderPhone . '_' . $trimmedText);
 
         // 7. منع معالجة الرسائل المكررة بشكل ذري (Atomic Lock)
-        $cacheKey = 'wa_msg_' . $messageId;
+        $cacheKey     = 'wa_msg_' . $messageId;
         $isNewMessage = Cache::add($cacheKey, true, 120);
 
         if (!$isNewMessage) {
@@ -120,8 +130,9 @@ class WhatsAppWebhookController extends Controller
             ProcessWhatsAppMessageJob::dispatch((string) $senderPhone, $trimmedText, $messageId);
 
             Log::info('[WhatsApp Controller] Job Dispatched Successfully to Queue', [
-                'sender_phone' => $senderPhone,
-                'message_id'   => $messageId,
+                'sender_phone'    => $senderPhone,
+                'recipient_phone' => $recipientPhone,
+                'message_id'      => $messageId,
             ]);
 
             return response()->json([
@@ -145,30 +156,72 @@ class WhatsAppWebhookController extends Controller
     }
 
     /**
-     * Verify if the sender is the authorized manager sending a "Note to Self".
+     * Verify if the message is sent by the authorized manager to their own self.
      *
      * @param string $senderPhone
+     * @param string $recipientPhone
      * @return bool
      */
-    protected function isSelfMessageFromManager(string $senderPhone): bool
+    protected function isSelfMessageFromManager(string $senderPhone, string $recipientPhone): bool
     {
         $managerPhone = config('services.wppconnect.admin_phone')
             ?? config('services.whatsapp.admin_phone')
             ?? '';
 
         if (empty($managerPhone)) {
+            Log::warning('[WhatsApp Controller] Manager phone config is missing during check');
             return true;
         }
 
-        $withoutDomain = strtok((string) $managerPhone, '@');
-        $phoneOnly = strtok($withoutDomain, ':');
-        $cleanManagerPhone = preg_replace('/[^0-9]/', '', (string) $phoneOnly);
+        $cleanManagerPhone = $this->cleanPhoneNumber((string) $managerPhone);
 
-        $minLen = 9;
-        if (strlen($senderPhone) >= $minLen && strlen($cleanManagerPhone) >= $minLen) {
-            return substr($senderPhone, -$minLen) === substr($cleanManagerPhone, -$minLen);
+        $isSenderManager    = $this->isPhoneMatch($senderPhone, $cleanManagerPhone);
+        $isRecipientManager = empty($recipientPhone) || $this->isPhoneMatch($recipientPhone, $cleanManagerPhone);
+
+        Log::info('[WhatsApp Controller] Manager Self Match Evaluation', [
+            'is_sender_manager'    => $isSenderManager,
+            'is_recipient_manager' => $isRecipientManager,
+        ]);
+
+        return $isSenderManager && $isRecipientManager;
+    }
+
+    /**
+     * Clean phone number string by removing domain suffix, device ports, and non-numeric characters.
+     *
+     * @param string $rawPhone
+     * @return string
+     */
+    protected function cleanPhoneNumber(string $rawPhone): string
+    {
+        if (empty($rawPhone)) {
+            return '';
         }
 
-        return $senderPhone === $cleanManagerPhone;
+        $withoutDomain = strtok($rawPhone, '@');
+        $phoneOnly      = strtok($withoutDomain, ':');
+
+        return preg_replace('/[^0-9]/', '', (string) $phoneOnly);
+    }
+
+    /**
+     * Flexible phone comparison based on trailing digits.
+     *
+     * @param string $phone1
+     * @param string $phone2
+     * @return bool
+     */
+    protected function isPhoneMatch(string $phone1, string $phone2): bool
+    {
+        if ($phone1 === $phone2) {
+            return true;
+        }
+
+        $minLen = 9;
+        if (strlen($phone1) >= $minLen && strlen($phone2) >= $minLen) {
+            return substr($phone1, -$minLen) === substr($phone2, -$minLen);
+        }
+
+        return false;
     }
 }
