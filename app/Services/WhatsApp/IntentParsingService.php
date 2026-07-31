@@ -9,30 +9,17 @@ use Throwable;
 class IntentParsingService
 {
     /**
-     * تحليل نية النص الوارد من الواتساب مع تسجيل التفاصيل في اللوغ
+     * تحليل نية النص الوارد من الواتساب
      */
     public function parseIntent(string $userMessage, string $phoneNumber): ?array
     {
-        Log::info(" [WA-IntentParsing] بدء تحليل رسالة جديدة", [
-            'phone'   => $phoneNumber,
-            'message' => $userMessage,
-        ]);
-
         $cleanedMessage = $this->sanitizeInput($userMessage);
 
         if (empty($cleanedMessage)) {
-            Log::warning("⚠️ [WA-IntentParsing] النص فارغ بعد التنظيف");
             return null;
         }
 
-        $result = $this->executeAiInference($cleanedMessage);
-
-        Log::info(" [WA-IntentParsing] نتيجة تحليل النية من DeepSeek", [
-            'phone'  => $phoneNumber,
-            'result' => $result,
-        ]);
-
-        return $result;
+        return $this->executeAiInference($cleanedMessage);
     }
 
     /**
@@ -50,8 +37,6 @@ class IntentParsingService
         $systemPrompt = $this->buildSystemPrompt();
 
         try {
-            Log::info(" [WA-IntentParsing] جاري إرسال الطلب لـ DeepSeek API");
-
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $apiKey,
                 'Content-Type'  => 'application/json',
@@ -62,7 +47,7 @@ class IntentParsingService
                     ['role' => 'user', 'content' => $message],
                 ],
                 'temperature'     => 0.1,
-                'max_tokens'      => 150,
+                'max_tokens'      => 200,
                 'response_format' => ['type' => 'json_object'],
             ]);
 
@@ -98,12 +83,23 @@ class IntentParsingService
 
         $intentsDocumentation = "";
         foreach ($handlers as $handler) {
-            $intentsDocumentation .= "- \"{$handler->getIntentName()}\": {$handler->getDescription()}\n";
+            $description = method_exists($handler, 'getDescription') ? $handler->getDescription() : 'معالجة الاستعلام المخصص';
+            $intentsDocumentation .= "- \"{$handler->getIntentName()}\": {$description}\n";
         }
+        $intentsDocumentation .= "- \"party_balance\": استعلام عن رصيد عميل أو مورد (مثال: رصيد شركة البركة، حساب العميل أحمد، كم على المورد علي).\n";
+        $intentsDocumentation .= "- \"item_stock\": استعلام عن رصيد مخزون صنف أو عدة أصناف (مثال: رصيد بنر 130، كم متوفر من أحبار هاس، جرد ورق 70 جرام).\n";
         $intentsDocumentation .= "- \"unknown\": إذا كان الطلب غير واضح أو غير مرتبط بنظام ERP.";
 
         return <<<PROMPT
-أنت محرك تحليل نيات (ERP Intent Parser). مهمتك إرجاع كائن JSON فقط يحتوي حتماً على المفاتيح: "intent", "branch", "date", "item_name".
+أنت محرك تحليل نيات (ERP Intent Parser). مهمتك إرجاع كائن JSON فقط يحتوي حتماً على المفاتيح التالية:
+{
+  "intent": "اسم النية",
+  "branch": "كود الفرع",
+  "date": "التاريخ المحدد أو null",
+  "item_name": "اسم الصنف أو null",
+  "party_name": "اسم العميل أو المورد أو null",
+  "party_type": "customer أو supplier أو all"
+}
 
 السياق الزمني الحالي:
 - تاريخ اليوم: {$today}
@@ -128,18 +124,25 @@ class IntentParsingService
    - احسب تاريخ أقرب يوم مطالع سابق للمطلوب (مثلاً "الاثنين الماضي").
 3. التواريخ الصريحة:
    - "15/5" أو "15-5" حوّلها إلى السنة الحالية "2026-05-15".
-4. في تقارير المخزون (inventory_report)، اجعل قيمة date دائماً null.
+4. في تقارير المخزون (item_stock) وأرصدة الحسابات (party_balance)، اجعل قيمة date دائماً null.
 
 قواعد استخراج اسم الصنف (item_name) والتطبيع اللغوي:
 1. قم باستخراج الكلمات الأساسية فقط للصنف وتجريد النص تماماً من كلمات الزيادة مثل: (عايز، شوف لي، كم، رصيد، متوفر، عندكم، في، اسأل لي عن).
-2. إزالة كافة حركات التشكيل.
-3. توحيد الهمزات: تحويل (أ، إ، آ) إلى (ا).
-4. توحيد الألف المقصورة والياء: تحويل (ى) إلى (ي).
-5. توحيد التاء المربوطة والهاء: تحويل (ة) إلى (ه).
+2. إزالة كافة حركات التشكيل، وتوحيد الهمزات (أ، إ، آ -> ا)، والياء (ى -> ي)، والتاء المربوطة (ة -> ه).
+
+قواعد استخراج اسم العميل/المورد (party_name) وتحديد النوع (party_type):
+1. party_name: استخرج اسم الشخص أو الشركة مجرداً من كلمات الطلب (مثل: كشف حساب، رصيد، حساب، كم عليه، كم له).
+2. party_type:
+   - إذا ذكر النص "عميل" أو كان الطلب يشير لمديونية بيع -> "customer".
+   - إذا ذكر النص "مورد" أو كان الطلب يشير لمستحقات توريد -> "supplier".
+   - إذا لم يتضح نوع الكيان بدقة -> "all".
 
 القيم الافتراضية:
 - date: استخدم "{$today}" إذا قصد المستخدم اليوم/الان، وإلا ضعه null.
 - branch: إذا لم يحدد المستخدم فرعاً، استخدم "all".
+- item_name: ضعه null إذا لم يكن الاستعلام عن صنف.
+- party_name: ضعه null إذا لم يكن الاستعلام عن عميل أو مورد.
+- party_type: ضعه "all" كافتراضي.
 
 تنبيه: ارجع كائن JSON فقط بدون أي مقدمات أو شرح.
 PROMPT;

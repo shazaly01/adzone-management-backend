@@ -106,7 +106,6 @@ class WhatsAppResponseService
 
         } catch (Throwable $e) {
             // تجاوز الخطأ بهدوء في حال تعثر طلب "جاري الكتابة" لضمان تسليم التقرير
-            Log::debug('WPPConnect typing simulation failed softly: ' . $e->getMessage());
         }
     }
 }

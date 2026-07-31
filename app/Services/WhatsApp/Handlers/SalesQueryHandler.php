@@ -6,10 +6,14 @@ use App\Services\WhatsApp\Contracts\QueryHandlerInterface;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Carbon\Carbon;
 use Throwable;
 
 class SalesQueryHandler implements QueryHandlerInterface
 {
+    /**
+     * ربط مفاتيح الفروع بأسماء اتصالات قاعدة البيانات
+     */
     protected array $branchConnections = [
         'omd'    => 'branch_main',
         'madani' => 'branch_1',
@@ -17,8 +21,11 @@ class SalesQueryHandler implements QueryHandlerInterface
         'port2'  => 'branch_3',
     ];
 
+    /**
+     * الأسماء المترجمة للفروع للعرض على الواتساب
+     */
     protected array $branchLabels = [
-        'omd'    => 'المركز الرئيسي',
+        'omd'    => 'المركز الرئيسي (أمدرمان)',
         'madani' => 'فرع مدني',
         'port1'  => 'فرع بورتسودان 1',
         'port2'  => 'فرع بورتسودان 2',
@@ -31,13 +38,20 @@ class SalesQueryHandler implements QueryHandlerInterface
 
     public function getDescription(): string
     {
-        return 'عند طلب استعلام المبيعات، الإيرادات، الكاش، أو عدد الفواتير لليوم أو تاريخ محدد أو فرع معين.';
+        return 'عند طلب استعلام المبيعات، الإيرادات، الكاش، أو عدد الفواتير لليوم أو تاريخ محدد أو فرع معين (مثال: مبيعات اليوم، مبيعات أمس، مبيعات فرع مدني).';
     }
 
     public function handle(array $parsedIntent): string
     {
         $targetBranch = $parsedIntent['branch'] ?? 'all';
-        $date = $parsedIntent['date'] ?? now()->format('Y-m-d');
+
+        // معالجة صريحة وآمنة للتاريخ باستخدام Carbon
+        try {
+            $rawDate = $parsedIntent['date'] ?? 'today';
+            $date = Carbon::parse($rawDate)->format('Y-m-d');
+        } catch (Throwable $e) {
+            $date = now()->format('Y-m-d');
+        }
 
         $connectionsToQuery = [];
         if ($targetBranch === 'all' || !isset($this->branchConnections[$targetBranch])) {
@@ -70,12 +84,12 @@ class SalesQueryHandler implements QueryHandlerInterface
                         COALESCE(SUM(grand_total), 0) as total_amount,
                         COUNT(id) as invoice_count,
                         COALESCE(SUM(CASE WHEN payment_type = 'cash' THEN grand_total ELSE 0 END), 0) as cash_amount,
-                        COALESCE(SUM(CASE WHEN payment_type = 'card' THEN grand_total ELSE 0 END), 0) as card_amount,
-                        COALESCE(SUM(CASE WHEN payment_type NOT IN ('cash', 'card') THEN grand_total ELSE 0 END), 0) as credit_amount
+                        COALESCE(SUM(CASE WHEN payment_type IN ('card', 'bank', 'transfer') THEN grand_total ELSE 0 END), 0) as card_amount,
+                        COALESCE(SUM(CASE WHEN payment_type NOT IN ('cash', 'card', 'bank', 'transfer') THEN grand_total ELSE 0 END), 0) as credit_amount
                     ")
                     ->first();
 
-                if ($salesData && (float)$salesData->total_amount > 0) {
+                if ($salesData && (float) $salesData->total_amount > 0) {
                     $branchTotal = (float) $salesData->total_amount;
                     $branchCount = (int) $salesData->invoice_count;
 
@@ -93,19 +107,40 @@ class SalesQueryHandler implements QueryHandlerInterface
             }
         }
 
+        $formattedDisplayDate = Carbon::parse($date)->format('Y/m/d');
+
+        // بناء ترويسة الفرع المخصص إن وُجد
+        $branchHeader = "";
+        if ($targetBranch !== 'all' && isset($this->branchLabels[$targetBranch])) {
+            $branchHeader = "🏢 *الفرع*: {$this->branchLabels[$targetBranch]}\n";
+        }
+
+        // التوجيه الذكي في حال عدم وجود أي مبيعات في اليوم المحدد
         if ($totalInvoices === 0 && empty($branchSummaries)) {
-            return "📊 **مبيعات بتاريخ ({$date}):**\nلا توجد أي فواتير مبيعات مسجلة في هذا التاريخ.";
+            return $branchHeader
+                 . "📊 *تقرير المبيعات بتاريخ ({$formattedDisplayDate}):*\n"
+                 . "⚠️ لا توجد أي فواتير مبيعات مسجلة في هذا التاريخ.\n\n"
+                 . "💡 *جرّب البحث عن:*\n"
+                 . "• `مبيعات أمس`\n"
+                 . "• `مبيعات اليوم في فرع مدني`\n"
+                 . "• `رصيد بنر 130`";
         }
 
-        // تنسيق الرد البسيط والمختصر
-        $output = "📊 **مبيعات ({$date}):**\n";
-        $output .= "💵 **الإجمالي:** " . number_format($totalSales, 0) . " SDG ({$totalInvoices} فاتورة)\n";
-        $output .= "💳 كاش: " . number_format($totalCash, 0) . " | شبكة: " . number_format($totalCard, 0) . " | آجل: " . number_format($totalCredit, 0) . "\n";
+        // تنسيق الرد النهائي لشاشة الواتساب مع اسم الفرع في البداية
+        $output = $branchHeader;
+        $output .= "📊 *تقرير المبيعات ({$formattedDisplayDate})*:\n";
+        $output .= "-----------------------------------\n";
+        $output .= "💵 *الإجمالي*: *" . number_format($totalSales, 0) . " SDG* ({$totalInvoices} فاتورة)\n";
+        $output .= "├ كاش: " . number_format($totalCash, 0) . " SDG\n";
+        $output .= "├ بنك/شبكة: " . number_format($totalCard, 0) . " SDG\n";
+        $output .= "└ آجل: " . number_format($totalCredit, 0) . " SDG\n";
 
-        if (count($branchSummaries) > 1) {
-            $output .= "🏢 **تفاصيل الفروع:**\n" . implode("\n", $branchSummaries);
+        // إظهار تفاصيل الفروع فقط عند الاستعلام عن جميع الفروع وكانت متعددة
+        if ($targetBranch === 'all' && count($branchSummaries) > 1) {
+            $output .= "-----------------------------------\n";
+            $output .= "🏢 *تفاصيل الفروع:*\n" . implode("\n", $branchSummaries);
         }
 
-        return $output;
+        return trim($output);
     }
 }
