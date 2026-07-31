@@ -18,140 +18,122 @@ class ValidateWhatsAppSender
      */
     public function handle(Request $request, Closure $next): Response
     {
-        try {
-            // 1. استخراج واستجابة فورية للأحداث غير النصية بدون تسجيل Logs
-            $event = $request->input('event') ?? $request->input('type') ?? '';
+        // 0. تسجيل الاستقبال الأولي للـ Webhook
+        $event = $request->input('event') ?? $request->input('type') ?? '';
 
-            $allowedEvents = [
-                'onmessage',
-                'onanymessage',
-                'onselfmessage',
-                'message',
-                'unreadmessages',
-            ];
+        Log::info('[WhatsApp Webhook] Incoming Webhook request received', [
+            'event'       => $event,
+            'ip'          => $request->ip(),
+            'all_payload' => $request->all(),
+        ]);
 
-            if (is_string($event) && !empty($event) && !in_array(strtolower($event), $allowedEvents, true)) {
-                return response()->json([
-                    'status'  => 'ignored_system_event',
-                    'message' => 'System event acknowledged and ignored.'
-                ], Response::HTTP_OK);
-            }
+        // 1. السماح بالأحداث النصية (بما فيها onSelfMessage) وتجاهل أحداث النظام غير النصية
+        $allowedEvents = [
+            'onmessage',
+            'onanymessage',
+            'onselfmessage',
+            'message',
+            'unreadmessages',
+        ];
 
-            // 2. استخراج معرف الشات / المرسل بأمان لمنع أخطاء المصفوفات
-            $rawSender = $request->input('from')
-                ?? $request->input('chatId')
-                ?? $request->input('sender.id')
-                ?? $request->input('data.from')
-                ?? $request->input('data.key.remoteJid')
-                ?? $request->input('sender')
-                ?? '';
+        if (is_string($event) && !empty($event) && !in_array(strtolower($event), $allowedEvents, true)) {
+            Log::notice('[WhatsApp Webhook] Ignored system event', ['event' => $event]);
 
-            if (is_array($rawSender)) {
-                $rawSender = $rawSender['id'] ?? $rawSender['remoteJid'] ?? json_encode($rawSender);
-            }
+            return response()->json([
+                'status'  => 'ignored_system_event',
+                'message' => 'System event acknowledged and ignored.'
+            ], Response::HTTP_OK);
+        }
 
-            $rawSenderString = is_string($rawSender) || is_numeric($rawSender) ? (string) $rawSender : '';
+        // 2. استخراج معرف الشات الأصلي بأمان لمنع أخطاء المصفوفات
+        $rawSender = $request->input('from')
+            ?? $request->input('chatId')
+            ?? $request->input('sender.id')
+            ?? $request->input('data.from')
+            ?? $request->input('data.key.remoteJid')
+            ?? $request->input('sender')
+            ?? '';
 
-            // 3. تجاهل رسائل المجموعات فوراً
-            $isGroup = $request->input('isGroupMsg')
-                ?? $request->input('isGroup')
-                ?? $request->input('data.isGroup')
-                ?? (!empty($rawSenderString) && str_contains($rawSenderString, '@g.us'));
+        if (is_array($rawSender)) {
+            $rawSender = $rawSender['id'] ?? $rawSender['remoteJid'] ?? json_encode($rawSender);
+        }
 
-            if (filter_var($isGroup, FILTER_VALIDATE_BOOLEAN)) {
-                return response()->json([
-                    'status'  => 'ignored_group_message',
-                    'message' => 'Group messages are ignored.'
-                ], Response::HTTP_OK);
-            }
+        $rawSenderString = is_string($rawSender) || is_numeric($rawSender) ? (string) $rawSender : '';
 
-            // 4. التحقق من وجود مرسل
-            if (empty($rawSenderString)) {
-                return response()->json([
-                    'status'  => 'ignored_no_sender',
-                    'message' => 'Webhook payload does not contain a valid sender.'
-                ], Response::HTTP_OK);
-            }
+        // 3. تجاهل رسائل المجموعات فوراً
+        $isGroup = $request->input('isGroupMsg')
+            ?? $request->input('isGroup')
+            ?? $request->input('data.isGroup')
+            ?? (!empty($rawSenderString) && str_contains($rawSenderString, '@g.us'));
 
-            // 5. تنظيف رقم المرسل بطريقة تتوافق مع WPPConnect Multi-Device
-            $withoutDomain = strtok($rawSenderString, '@');
-            $phoneOnly = strtok($withoutDomain, ':');
-            $senderDigits = preg_replace('/[^0-9]/', '', (string) $phoneOnly);
+        if (filter_var($isGroup, FILTER_VALIDATE_BOOLEAN)) {
+            Log::notice('[WhatsApp Webhook] Ignored group message', ['sender' => $rawSenderString]);
 
-            // 6. قراءة وتنظيف رقم المدير من الإعدادات
-            $rawAdminPhone = config('services.wppconnect.admin_phone')
-                ?? config('services.whatsapp.admin_phone')
-                ?? config('services.whatsapp.manager_phone')
-                ?? '';
+            return response()->json([
+                'status'  => 'ignored_group_message',
+                'message' => 'Group messages are ignored.'
+            ], Response::HTTP_OK);
+        }
 
-            $withoutAdminDomain = strtok((string) $rawAdminPhone, '@');
-            $phoneAdminOnly = strtok($withoutAdminDomain, ':');
-            $adminDigits = preg_replace('/[^0-9]/', '', (string) $phoneAdminOnly);
+        // 4. التحقق من وجود مرسل
+        if (empty($rawSenderString)) {
+            Log::warning('[WhatsApp Webhook] No valid sender found in payload');
 
-            if (empty($adminDigits) || empty($senderDigits)) {
-                return response()->json([
-                    'status'  => 'ignored_unauthorized',
-                    'message' => 'Unauthorized WhatsApp sender or admin phone misconfigured.'
-                ], Response::HTTP_OK);
-            }
+            return response()->json([
+                'status'  => 'ignored_no_sender',
+                'message' => 'Webhook payload does not contain a valid sender.'
+            ], Response::HTTP_OK);
+        }
 
-            // 7. مطابقة رقم المرسل مع رقم المدير
-            if (!$this->isPhoneMatch($senderDigits, $adminDigits)) {
-                return response()->json([
-                    'status'  => 'ignored_unauthorized',
-                    'message' => 'Unauthorized WhatsApp sender.'
-                ], Response::HTTP_OK);
-            }
+        // 5. تنظيف رقم المرسل بطريقة آمنة تتوافق مع نظام WPPConnect Multi-Device (إزالة @ ورمز الجهاز :xx)
+        $withoutDomain = strtok($rawSenderString, '@');
+        $phoneOnly = strtok($withoutDomain, ':');
+        $senderDigits = preg_replace('/[^0-9]/', '', (string) $phoneOnly);
 
-            // 8. [الإضافة الجديدة]: فحص المستلم للرسائل الصادرة (fromMe / Note to Self)
-            $fromMe = filter_var(
-                $request->input('fromMe') ?? $request->input('data.fromMe') ?? false,
-                FILTER_VALIDATE_BOOLEAN
-            );
+        // 6. قراءة وتنظيف رقم المدير من الإعدادات
+        $rawAdminPhone = config('services.wppconnect.admin_phone')
+            ?? config('services.whatsapp.admin_phone')
+            ?? config('services.whatsapp.manager_phone')
+            ?? '';
 
-            if ($fromMe) {
-                // استخراج المستلم بأمان
-                $rawRecipient = $request->input('to')
-                    ?? $request->input('data.to')
-                    ?? $request->input('recipient')
-                    ?? '';
+        $withoutAdminDomain = strtok((string) $rawAdminPhone, '@');
+        $phoneAdminOnly = strtok($withoutAdminDomain, ':');
+        $adminDigits = preg_replace('/[^0-9]/', '', (string) $phoneAdminOnly);
 
-                if (is_array($rawRecipient)) {
-                    $rawRecipient = $rawRecipient['id'] ?? $rawRecipient['remoteJid'] ?? json_encode($rawRecipient);
-                }
+        Log::info('[WhatsApp Webhook] Phone Parsing Verification', [
+            'raw_sender_string' => $rawSenderString,
+            'parsed_sender'     => $senderDigits,
+            'configured_admin'  => $adminDigits,
+        ]);
 
-                $rawRecipientString = is_string($rawRecipient) || is_numeric($rawRecipient) ? (string) $rawRecipient : '';
-                $withoutRecipientDomain = strtok($rawRecipientString, '@');
-                $phoneRecipientOnly = strtok($withoutRecipientDomain, ':');
-                $recipientDigits = preg_replace('/[^0-9]/', '', (string) $phoneRecipientOnly);
+        if (empty($adminDigits) || empty($senderDigits)) {
+            Log::error('[WhatsApp Webhook] Missing sender digits or admin configuration missing');
 
-                // إذا كانت الرسالة صدارة لعميل/طرف خارجي وليس لرقم المدير نفسه
-                if (!empty($recipientDigits) && !$this->isPhoneMatch($recipientDigits, $adminDigits)) {
-                    return response()->json([
-                        'status'  => 'ignored_outbound_external',
-                        'message' => 'Outbound message to external contact is ignored.'
-                    ], Response::HTTP_OK);
-                }
-            }
+            return response()->json([
+                'status'  => 'ignored_unauthorized',
+                'message' => 'Unauthorized WhatsApp sender or admin phone misconfigured.'
+            ], Response::HTTP_OK);
+        }
 
-            // 9. حفظ الرقم المنظف في attributes الطلب للاستخدام في الـ Controller
-            $request->attributes->set('sender_phone', $senderDigits);
-
-            return $next($request);
-
-        } catch (\Throwable $e) {
-            // تسجيل الأخطاء الحرجة فقط (Exceptions)
-            Log::error('[WhatsApp Webhook Middleware Exception]', [
-                'error' => $e->getMessage(),
-                'file'  => $e->getFile(),
-                'line'  => $e->getLine(),
+        // 7. مطابقة مرنة للرقم
+        if (!$this->isPhoneMatch($senderDigits, $adminDigits)) {
+            Log::warning('[WhatsApp Webhook] Sender phone does not match admin phone', [
+                'sender' => $senderDigits,
+                'admin'  => $adminDigits,
             ]);
 
             return response()->json([
-                'status'  => 'error',
-                'message' => 'Internal server error while validating webhook.'
-            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+                'status'  => 'ignored_unauthorized',
+                'message' => 'Unauthorized WhatsApp sender.'
+            ], Response::HTTP_OK);
         }
+
+        // 8. حفظ الرقم المنظف في attributes الطلب للاستخدام في الـ Controller
+        $request->attributes->set('sender_phone', $senderDigits);
+
+        Log::info('[WhatsApp Webhook] Middleware passed successfully', ['sender_phone' => $senderDigits]);
+
+        return $next($request);
     }
 
     /**
