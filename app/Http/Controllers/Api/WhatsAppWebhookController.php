@@ -20,9 +20,10 @@ class WhatsAppWebhookController extends Controller
      */
     public function handle(Request $request): JsonResponse
     {
-        // 0. تسجيل وصول الطلب مبدئياً لتأكيد وصول الـ Webhook
-        Log::info('📥 [WA-Webhook] تم استقبال طلب Webhook جديد', [
-            'payload' => $request->all()
+        // 0. تسجيل وصول الطلب مبدئياً لتأكيد وصول الـ Webhook إلى الـ Controller
+        Log::info('📥 [WA-Webhook] وصل الطلب إلى الـ Controller بنجاح', [
+            'payload'    => $request->all(),
+            'attributes' => $request->attributes->all(),
         ]);
 
         // 1. استخراج رقم المرسل والمستقبل المتحقق منهما مسبقاً من الـ Middleware أو استخراجهما من الطلب
@@ -49,6 +50,11 @@ class WhatsAppWebhookController extends Controller
             $recipientPhone = $this->cleanPhoneNumber((string) (is_array($recipient) ? json_encode($recipient) : $recipient));
         }
 
+        Log::info('🔍 [WA-Webhook] البيانات المبدئية للمحاذفة', [
+            'sender_phone'    => $senderPhone,
+            'recipient_phone' => $recipientPhone,
+        ]);
+
         // 2. استخراج نص الرسالة بطريقة آمنة وبكافة الخيارات الممكنة
         $rawMessageText = $request->input('body')
             ?? $request->input('content')
@@ -67,13 +73,20 @@ class WhatsAppWebhookController extends Controller
 
         // 3. تجاهل الرسائل الفارغة
         if (empty($trimmedText)) {
-            Log::warning('⚠️ [WA-Webhook] تم تجاهل الطلب: نص الرسالة فارغ');
+            Log::warning('⚠️ [WA-Webhook] تم تجاهل الطلب: نص الرسالة فارغ', [
+                'sender'    => $senderPhone,
+                'recipient' => $recipientPhone,
+                'raw_input' => $request->all(),
+            ]);
             return response()->json(['status' => 'ignored_empty_message'], 200);
         }
 
         // 4. الحماية التامة من الحلقة التكرارية (Anti-Loop): تجاهل رسائل البوت الذاتية
         if (str_starts_with($trimmedText, "\u{200B}")) {
-            Log::warning('⚠️ [WA-Webhook] تم تجاهل الطلب: رسالة صالحة من البوت (Anti-Loop)');
+            Log::warning('⚠️ [WA-Webhook] تم تجاهل الطلب: رسالة صالحة من البوت (Anti-Loop)', [
+                'sender' => $senderPhone,
+                'text'   => $trimmedText,
+            ]);
             return response()->json(['status' => 'ignored_bot_outbound_response'], 200);
         }
 
@@ -90,6 +103,7 @@ class WhatsAppWebhookController extends Controller
             Log::warning('⚠️ [WA-Webhook] تم تجاهل الطلب: رسالة صادرة fromMe وليست من المدير المعرف', [
                 'sender'    => $senderPhone,
                 'recipient' => $recipientPhone,
+                'rawFromMe' => $rawFromMe,
             ]);
             return response()->json(['status' => 'ignored_outbound_message'], 200);
         }
@@ -114,6 +128,8 @@ class WhatsAppWebhookController extends Controller
         if (!$isNewMessage) {
             Log::warning('⚠️ [WA-Webhook] تم تجاهل الطلب: رسالة مكررة (Atomic Lock)', [
                 'message_id' => $messageId,
+                'cache_key'  => $cacheKey,
+                'sender'     => $senderPhone,
             ]);
             return response()->json(['status' => 'ignored_duplicate'], 200);
         }
@@ -138,6 +154,7 @@ class WhatsAppWebhookController extends Controller
                 'message_id'   => $messageId,
                 'sender_phone' => $senderPhone,
                 'error'        => $e->getMessage(),
+                'trace'        => $e->getTraceAsString(),
             ]);
 
             return response()->json([
@@ -162,6 +179,7 @@ class WhatsAppWebhookController extends Controller
             ?? '';
 
         if (empty($managerPhone)) {
+            Log::warning('⚠️ [WA-Webhook] لم يتم العثور على إعدادات رقم المدير admin_phone في config');
             return true;
         }
 
@@ -185,7 +203,20 @@ class WhatsAppWebhookController extends Controller
         $isSelfByAuthor     = !empty($rawAuthorString) && !empty($rawRecipientString) && ($rawAuthorString === $rawRecipientString);
         $isRecipientManager = empty($recipientPhone) || $this->isPhoneMatch($recipientPhone, $cleanManagerPhone);
 
-        return $isSenderManager && ($isSelfByAuthor || $isRecipientManager);
+        $result = $isSenderManager && ($isSelfByAuthor || $isRecipientManager);
+
+        if (!$result) {
+            Log::warning('⚠️ [WA-Webhook] فشل فحص isSelfMessageFromManager', [
+                'senderPhone'        => $senderPhone,
+                'recipientPhone'     => $recipientPhone,
+                'cleanManagerPhone'  => $cleanManagerPhone,
+                'isSenderManager'    => $isSenderManager,
+                'isSelfByAuthor'     => $isSelfByAuthor,
+                'isRecipientManager' => $isRecipientManager,
+            ]);
+        }
+
+        return $result;
     }
 
     /**

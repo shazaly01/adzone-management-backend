@@ -18,6 +18,12 @@ class ValidateWhatsAppSender
      */
     public function handle(Request $request, Closure $next): Response
     {
+        // 0. تسجيل وصول الطلب مبدئياً إلى الـ Middleware للمعاينة قبل الفلترة
+        Log::info('📥 [WA-Middleware] تم استقبال طلب Webhook جديد', [
+            'payload' => $request->all(),
+            'headers' => $request->headers->all(),
+        ]);
+
         $event = $request->input('event') ?? $request->input('type') ?? '';
 
         // 1. السماح بالأحداث النصية فقط وتجاهل أحداث النظام
@@ -30,6 +36,11 @@ class ValidateWhatsAppSender
         ];
 
         if (is_string($event) && !empty($event) && !in_array(strtolower($event), $allowedEvents, true)) {
+            Log::warning('⚠️ [WA-Middleware] تم تجاهل الطلب: نوع الحدث غير مسموح به', [
+                'event'          => $event,
+                'allowed_events' => $allowedEvents,
+            ]);
+
             return response()->json([
                 'status'  => 'ignored_system_event',
                 'message' => 'System event acknowledged and ignored.'
@@ -83,6 +94,12 @@ class ValidateWhatsAppSender
             ?? (!empty($rawRecipientString) && str_contains($rawRecipientString, '@g.us'));
 
         if (filter_var($isGroup, FILTER_VALIDATE_BOOLEAN)) {
+            Log::warning('⚠️ [WA-Middleware] تم تجاهل الطلب: رسالة قادمة من مجموعة', [
+                'sender'    => $rawSenderString,
+                'recipient' => $rawRecipientString,
+                'isGroup'   => $isGroup,
+            ]);
+
             return response()->json([
                 'status'  => 'ignored_group_message',
                 'message' => 'Group messages are ignored.'
@@ -99,7 +116,12 @@ class ValidateWhatsAppSender
         $adminDigits = $this->cleanPhoneNumber((string) $rawAdminPhone);
 
         if (empty($adminDigits) || empty($senderDigits)) {
-            Log::error('[WhatsApp Webhook] Admin config missing or invalid sender digits');
+            Log::error('❌ [WA-Middleware] خطأ: تعذر التحقق بسبب نقص إعدادات المدير أو عدم توفر رقم المرسل', [
+                'raw_admin_phone' => $rawAdminPhone,
+                'admin_digits'    => $adminDigits,
+                'raw_sender'      => $rawSenderString,
+                'sender_digits'   => $senderDigits,
+            ]);
 
             return response()->json([
                 'status'  => 'ignored_unauthorized',
@@ -109,6 +131,11 @@ class ValidateWhatsAppSender
 
         // 7. الشرط الأول: المرسل يجب أن يكون هو المدير المصرح له
         if (!$this->isPhoneMatch($senderDigits, $adminDigits)) {
+            Log::warning('⚠️ [WA-Middleware] تم تجاهل الطلب: المرسل ليس المدير المصرح له', [
+                'sender_digits' => $senderDigits,
+                'admin_digits'  => $adminDigits,
+            ]);
+
             return response()->json([
                 'status'  => 'ignored_unauthorized_sender',
                 'message' => 'Sender is not authorized admin.'
@@ -116,23 +143,34 @@ class ValidateWhatsAppSender
         }
 
         // 8. الشرط المعماري الثاني (الرسالة الذاتية Note to Self):
-        // إما أن يكون الكاتب مساوياً للمستلم تماماً (author === to)
-        // أو أن يكون المستلم المباشر هو رقم المدير بـ @c.us
         $isSelfChatByAuthor = !empty($rawAuthorString) && !empty($rawRecipientString) && ($rawAuthorString === $rawRecipientString);
 
-        $recipientDigits    = $this->cleanPhoneNumber($rawRecipientString);
-        $isSelfChatByPhone  = !empty($recipientDigits) && $this->isPhoneMatch($recipientDigits, $adminDigits);
+        $recipientDigits   = $this->cleanPhoneNumber($rawRecipientString);
+        $isSelfChatByPhone = !empty($recipientDigits) && $this->isPhoneMatch($recipientDigits, $adminDigits);
 
         $isSelfChat = $isSelfChatByAuthor || $isSelfChatByPhone;
 
         if (!$isSelfChat) {
+            Log::warning('⚠️ [WA-Middleware] تم تجاهل الطلب: ليست محادثة ذاتية (Note to Self)', [
+                'raw_author'         => $rawAuthorString,
+                'raw_recipient'      => $rawRecipientString,
+                'recipient_digits'   => $recipientDigits,
+                'admin_digits'       => $adminDigits,
+                'isSelfChatByAuthor' => $isSelfChatByAuthor,
+                'isSelfChatByPhone'  => $isSelfChatByPhone,
+            ]);
+
             return response()->json([
                 'status'  => 'ignored_not_self_chat',
                 'message' => 'Outbound message directed to external contact ignored.'
             ], Response::HTTP_OK);
         }
 
-        // 9. اعتماد الطلب وتمريره
+        // 9. اعتماد الطلب وتمريره للـ Controller
+        Log::info('✅ [WA-Middleware] تم اجتياز كافة الفحوصات بنجاح وتمرير الطلب إلى الـ Controller', [
+            'sender_phone' => $senderDigits,
+        ]);
+
         $request->attributes->set('sender_phone', $senderDigits);
 
         return $next($request);
